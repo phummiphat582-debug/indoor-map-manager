@@ -10,6 +10,7 @@ interface MapCanvasProps {
   hiddenTypes: Set<EquipmentType>;
   selectedPinId: string | null;
   isAddMode: boolean;
+  canDragPins?: boolean;
   transform: MapTransform;
   onSelectPin: (pin: EquipmentPin) => void;
   onMovePin: (pinId: string, x: number, y: number) => void;
@@ -36,6 +37,7 @@ export const MapCanvas: React.FC<MapCanvasProps> = ({
   hiddenTypes,
   selectedPinId,
   isAddMode,
+  canDragPins = true,
   transform,
   onSelectPin,
   onMovePin,
@@ -218,6 +220,7 @@ export const MapCanvas: React.FC<MapCanvasProps> = ({
                 pin={pin}
                 isSelected={pin.id === selectedPinId}
                 mapScale={transform.scale}
+                canDrag={canDragPins}
                 onSelect={onSelectPin}
                 onMove={onMovePin}
               />

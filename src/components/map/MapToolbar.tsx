@@ -5,6 +5,7 @@ interface MapToolbarProps {
   scale: number;
   isAddMode: boolean;
   hasFloorPlan: boolean;
+  canAddPin?: boolean;
   onZoomIn: () => void;
   onZoomOut: () => void;
   onFitToScreen: () => void;
@@ -17,6 +18,7 @@ export const MapToolbar: React.FC<MapToolbarProps> = ({
   scale,
   isAddMode,
   hasFloorPlan,
+  canAddPin = true,
   onZoomIn,
   onZoomOut,
   onFitToScreen,
@@ -31,8 +33,14 @@ export const MapToolbar: React.FC<MapToolbarProps> = ({
       {/* Add Pin Button (Min-h 44px, Orange Accent) */}
       <button
         onClick={onToggleAddMode}
-        disabled={!hasFloorPlan}
-        title={isAddMode ? 'ยกเลิกโหมดเพิ่มจุด (Esc)' : 'เพิ่มจุดติดตั้งอุปกรณ์บนแผนที่นี้'}
+        disabled={!hasFloorPlan || !canAddPin}
+        title={
+          !canAddPin
+            ? 'เฉพาะผู้มีสิทธิ์แก้ไข (Editor / Admin)'
+            : isAddMode
+            ? 'ยกเลิกโหมดเพิ่มจุด (Esc)'
+            : 'เพิ่มจุดติดตั้งอุปกรณ์บนแผนที่นี้'
+        }
         aria-label={isAddMode ? 'ยกเลิกโหมดเพิ่มจุด (Esc)' : 'เพิ่มจุดติดตั้งอุปกรณ์บนแผนที่นี้'}
         className={`min-h-[44px] flex items-center gap-2 px-4 rounded-xl text-xs sm:text-sm font-semibold transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed shadow-xs ${
           isAddMode

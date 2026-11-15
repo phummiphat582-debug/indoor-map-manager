@@ -6,6 +6,7 @@ interface MapListSectionProps {
   maps: FloorPlan[];
   activeMapId: string | null;
   equipmentCountsByMap: Record<string, number>;
+  canManageMaps?: boolean;
   onSelectMap: (mapId: string) => void;
   onOpenAddMapModal: () => void;
   onEditMapName: (map: FloorPlan) => void;
@@ -16,6 +17,7 @@ export const MapListSection: React.FC<MapListSectionProps> = ({
   maps,
   activeMapId,
   equipmentCountsByMap,
+  canManageMaps = true,
   onSelectMap,
   onOpenAddMapModal,
   onEditMapName,
@@ -23,15 +25,17 @@ export const MapListSection: React.FC<MapListSectionProps> = ({
 }) => {
   return (
     <div className="space-y-4">
-      {/* Add New Map Button */}
-      <button
-        onClick={onOpenAddMapModal}
-        className="w-full min-h-[44px] flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold transition shadow-sm shadow-blue-600/20 cursor-pointer"
-        aria-label="เพิ่มแผนที่ใหม่"
-      >
-        <Plus className="w-4 h-4" />
-        <span>เพิ่มแผนที่ใหม่</span>
-      </button>
+      {/* Add New Map Button (Admin only) */}
+      {canManageMaps && (
+        <button
+          onClick={onOpenAddMapModal}
+          className="w-full min-h-[44px] flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-sm font-semibold transition shadow-sm shadow-blue-600/20 cursor-pointer"
+          aria-label="เพิ่มแผนที่ใหม่"
+        >
+          <Plus className="w-4 h-4" />
+          <span>เพิ่มแผนที่ใหม่</span>
+        </button>
+      )}
 
       {/* Map Items List */}
       <div className="space-y-2">
@@ -93,25 +97,29 @@ export const MapListSection: React.FC<MapListSectionProps> = ({
                     className="flex items-center gap-1 shrink-0"
                     onClick={(e) => e.stopPropagation()}
                   >
-                    <button
-                      type="button"
-                      onClick={() => onEditMapName(map)}
-                      className="min-h-[44px] min-w-[44px] flex items-center justify-center text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-xl transition cursor-pointer"
-                      title="แก้ไขชื่อแผนที่"
-                      aria-label={`แก้ไขชื่อแผนที่ ${map.name}`}
-                    >
-                      <Edit2 className="w-4 h-4" />
-                    </button>
+                    {canManageMaps && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={() => onEditMapName(map)}
+                          className="min-h-[44px] min-w-[44px] flex items-center justify-center text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-xl transition cursor-pointer"
+                          title="แก้ไขชื่อแผนที่"
+                          aria-label={`แก้ไขชื่อแผนที่ ${map.name}`}
+                        >
+                          <Edit2 className="w-4 h-4" />
+                        </button>
 
-                    <button
-                      type="button"
-                      onClick={() => onRequestDeleteMap(map)}
-                      className="min-h-[44px] min-w-[44px] flex items-center justify-center text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition cursor-pointer"
-                      title="ลบแผนที่นี้"
-                      aria-label={`ลบแผนที่ ${map.name}`}
-                    >
-                      <Trash2 className="w-4 h-4" />
-                    </button>
+                        <button
+                          type="button"
+                          onClick={() => onRequestDeleteMap(map)}
+                          className="min-h-[44px] min-w-[44px] flex items-center justify-center text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded-xl transition cursor-pointer"
+                          title="ลบแผนที่นี้"
+                          aria-label={`ลบแผนที่ ${map.name}`}
+                        >
+                          <Trash2 className="w-4 h-4" />
+                        </button>
+                      </>
+                    )}
 
                     <ChevronRight
                       className={`w-4 h-4 text-slate-400 transition-transform ${

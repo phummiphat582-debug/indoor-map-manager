@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { Layers, ListFilter, PieChart, Database, ChevronLeft, ChevronRight, X } from 'lucide-react';
-import type { EquipmentPin, EquipmentType, EquipmentStatus, FloorPlan } from '../../types';
+import type { EquipmentPin, EquipmentType, EquipmentStatus, FloorPlan, UserProfile } from '../../types';
+import { canManageMaps } from '../../services/auth';
 import { MapListSection } from './MapListSection';
 import { EquipmentList } from './EquipmentList';
 import { LegendSection } from './LegendSection';
@@ -11,6 +12,7 @@ interface SidebarProps {
   activeMapId: string | null;
   equipment: EquipmentPin[]; // Pins belonging to active map
   allEquipment: EquipmentPin[]; // All pins across all maps
+  currentUser: UserProfile;
   selectedPinId: string | null;
   hiddenTypes: Set<EquipmentType>;
   isOpen: boolean;
@@ -37,6 +39,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
   activeMapId,
   equipment,
   allEquipment,
+  currentUser,
   selectedPinId,
   hiddenTypes,
   isOpen,
@@ -173,6 +176,7 @@ export const Sidebar: React.FC<SidebarProps> = ({
               maps={maps}
               activeMapId={activeMapId}
               equipmentCountsByMap={equipmentCountsByMap}
+              canManageMaps={canManageMaps(currentUser)}
               onSelectMap={onSelectMap}
               onOpenAddMapModal={onOpenAddMapModal}
               onEditMapName={onEditMapName}

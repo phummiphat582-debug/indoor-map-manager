@@ -1,18 +1,35 @@
 import React from 'react';
-import { Map, Menu, Plus, Upload, Download, Layers, ChevronDown } from 'lucide-react';
-import type { FloorPlan, EquipmentPin } from '../types';
+import {
+  Map,
+  Menu,
+  Plus,
+  Upload,
+  Download,
+  Layers,
+  ChevronDown,
+  Cloud,
+  Lock,
+} from 'lucide-react';
+import type { FloorPlan, EquipmentPin, UserProfile, ConnectionStatus } from '../types';
+import { canEditEquipment, canManageMaps } from '../services/auth';
 
 interface HeaderProps {
   maps: FloorPlan[];
   activeMap: FloorPlan | null;
-  equipment: EquipmentPin[]; // Pins belonging to the active map
+  equipment: EquipmentPin[];
   isAddMode: boolean;
+  currentUser: UserProfile;
+  connectionStatus: ConnectionStatus;
+  lastSyncAt: Date | null;
+  offlineQueueCount: number;
   onSelectMap: (mapId: string) => void;
   onToggleAddMode: () => void;
   onOpenUploadModal: () => void;
   onOpenMobileSidebar: () => void;
   onExportJSON: () => void;
   onImportClick: () => void;
+  onOpenAuthModal: () => void;
+  onOpenCloudModal: () => void;
 }
 
 export const Header: React.FC<HeaderProps> = ({
@@ -20,13 +37,22 @@ export const Header: React.FC<HeaderProps> = ({
   activeMap,
   equipment,
   isAddMode,
+  currentUser,
+  connectionStatus,
+  lastSyncAt,
+  offlineQueueCount,
   onSelectMap,
   onToggleAddMode,
   onOpenUploadModal,
   onOpenMobileSidebar,
   onExportJSON,
   onImportClick,
+  onOpenAuthModal,
+  onOpenCloudModal,
 }) => {
+  const hasEditPermission = canEditEquipment(currentUser);
+  const hasMapManagePermission = canManageMaps(currentUser);
+
   return (
     <header className="min-h-[64px] px-3 sm:px-5 bg-white border-b border-slate-200 flex items-center justify-between text-slate-800 shrink-0 z-30 select-none shadow-xs">
       {/* Left: Mobile Menu & Logo/Title */}
@@ -52,7 +78,10 @@ export const Header: React.FC<HeaderProps> = ({
               {activeMap && (
                 <>
                   <span className="text-slate-300">•</span>
-                  <span>กำลังดู: <strong className="text-slate-700">{activeMap.name}</strong> ({equipment.length} จุด)</span>
+                  <span>
+                    กำลังดู: <strong className="text-slate-700">{activeMap.name}</strong> (
+                    {equipment.length} จุด)
+                  </span>
                 </>
               )}
             </p>
@@ -82,41 +111,125 @@ export const Header: React.FC<HeaderProps> = ({
         </div>
       )}
 
-      {/* Right: Quick Action Buttons */}
+      {/* Right: Cloud Status, User Profile & Quick Action Buttons */}
       <div className="flex items-center gap-2 shrink-0">
+        {/* Realtime Cloud Status Button */}
+        <button
+          type="button"
+          onClick={onOpenCloudModal}
+          className="min-h-[44px] flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl border border-slate-200 hover:bg-slate-50 transition cursor-pointer text-xs"
+          title={`สถานะการเชื่อมต่อ: ${
+            connectionStatus === 'connected'
+              ? 'ออนไลน์'
+              : connectionStatus === 'connecting'
+              ? 'กำลังเชื่อมต่อใหม่'
+              : 'ออฟไลน์'
+          }${lastSyncAt ? ` • ซิงก์ล่าสุด ${lastSyncAt.toLocaleTimeString('th-TH')}` : ''} (คลิกเพื่อตั้งค่า)`}
+          aria-label="สถานะการเชื่อมต่อ Real-time"
+        >
+          <span
+            className={`w-2.5 h-2.5 rounded-full ${
+              connectionStatus === 'connected'
+                ? 'bg-emerald-500 animate-pulse'
+                : connectionStatus === 'connecting'
+                ? 'bg-amber-500 animate-ping'
+                : 'bg-rose-500'
+            }`}
+          />
+          <Cloud className="w-4 h-4 text-slate-500 hidden sm:inline" />
+          <span className="font-semibold hidden md:inline">
+            {connectionStatus === 'connected'
+              ? 'ออนไลน์'
+              : connectionStatus === 'connecting'
+              ? 'เชื่อมต่อ...'
+              : 'ออฟไลน์'}
+          </span>
+          {offlineQueueCount > 0 && (
+            <span className="px-1.5 py-0.5 rounded-full bg-amber-500 text-white text-[10px] font-bold">
+              {offlineQueueCount}
+            </span>
+          )}
+        </button>
+
+        {/* User Profile / Role Button */}
+        <button
+          type="button"
+          onClick={onOpenAuthModal}
+          className="min-h-[44px] flex items-center gap-1.5 px-2.5 sm:px-3 py-1.5 rounded-xl border border-slate-200 hover:bg-slate-50 transition cursor-pointer text-xs"
+          title="คลิกเพื่อสลับผู้ใช้งานหรือออกจากระบบ"
+          aria-label="โปรไฟล์ผู้ใช้งาน"
+        >
+          <span className="text-sm">{currentUser.avatar || '👤'}</span>
+          <span className="font-semibold text-slate-800 max-w-[90px] sm:max-w-[120px] truncate hidden sm:inline">
+            {currentUser.name}
+          </span>
+          <span
+            className={`text-[10px] font-bold px-1.5 py-0.2 rounded uppercase ${
+              currentUser.role === 'admin'
+                ? 'bg-purple-100 text-purple-700'
+                : currentUser.role === 'editor'
+                ? 'bg-blue-100 text-blue-700'
+                : 'bg-slate-100 text-slate-600'
+            }`}
+          >
+            {currentUser.role}
+          </span>
+        </button>
+
         {/* Add Pin Button (Vibrant Orange Accent) */}
         <button
           onClick={onToggleAddMode}
-          disabled={!activeMap}
-          className={`min-h-[44px] flex items-center gap-2 px-4 rounded-xl text-xs sm:text-sm font-semibold transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed shadow-xs ${
+          disabled={!activeMap || !hasEditPermission}
+          className={`min-h-[44px] flex items-center gap-2 px-3 sm:px-4 rounded-xl text-xs sm:text-sm font-semibold transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed shadow-xs ${
             isAddMode
               ? 'bg-amber-500 hover:bg-amber-600 text-white ring-2 ring-amber-400'
               : 'bg-orange-600 hover:bg-orange-700 text-white shadow-orange-600/20'
           }`}
-          aria-label={isAddMode ? 'คลิกบนแผนที่เพื่อวางจุด หรือกด Esc เพื่อยกเลิก' : 'เพิ่มจุดติดตั้งอุปกรณ์บนแผนที่'}
+          title={
+            !hasEditPermission
+              ? 'เฉพาะผู้มีสิทธิ์แก้ไข (Editor / Admin)'
+              : isAddMode
+              ? 'คลิกบนแผนที่เพื่อวางจุด หรือกด Esc เพื่อยกเลิก'
+              : 'เพิ่มจุดติดตั้งอุปกรณ์บนแผนที่'
+          }
+          aria-label={
+            isAddMode
+              ? 'คลิกบนแผนที่เพื่อวางจุด หรือกด Esc เพื่อยกเลิก'
+              : 'เพิ่มจุดติดตั้งอุปกรณ์บนแผนที่'
+          }
         >
-          <Plus className="w-4 h-4" />
+          {!hasEditPermission ? (
+            <Lock className="w-4 h-4" />
+          ) : (
+            <Plus className="w-4 h-4" />
+          )}
           <span className="hidden sm:inline">
-            {isAddMode ? 'คลิกบนแผนที่เพื่อวางจุด' : 'เพิ่มจุดติดตั้ง'}
+            {!hasEditPermission
+              ? 'ดูข้อมูลเท่านั้น'
+              : isAddMode
+              ? 'คลิกเพื่อวางจุด'
+              : 'เพิ่มจุดติดตั้ง'}
           </span>
           <span className="sm:hidden">{isAddMode ? 'กำลังวาง' : 'เพิ่มจุด'}</span>
         </button>
 
-        {/* Add Map Button (Solid Blue Accent) */}
-        <button
-          onClick={onOpenUploadModal}
-          className="min-h-[44px] hidden sm:flex items-center gap-1.5 px-4 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs sm:text-sm font-semibold transition cursor-pointer shadow-xs shadow-blue-600/10"
-          aria-label="เพิ่มแผนที่ใหม่"
-        >
-          <Plus className="w-4 h-4" />
-          <span>เพิ่มแผนที่</span>
-        </button>
+        {/* Add Map Button (Solid Blue Accent) - Admin only */}
+        {hasMapManagePermission && (
+          <button
+            onClick={onOpenUploadModal}
+            className="min-h-[44px] hidden sm:flex items-center gap-1.5 px-3.5 rounded-xl bg-blue-600 hover:bg-blue-700 text-white text-xs sm:text-sm font-semibold transition cursor-pointer shadow-xs shadow-blue-600/10"
+            aria-label="เพิ่มแผนที่ใหม่"
+          >
+            <Plus className="w-4 h-4" />
+            <span className="hidden lg:inline">เพิ่มแผนที่</span>
+          </button>
+        )}
 
         {/* Export JSON Quick */}
         <button
           onClick={onExportJSON}
           disabled={maps.length === 0}
-          className="min-h-[44px] hidden md:flex items-center gap-1.5 px-3.5 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-medium transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+          className="min-h-[44px] hidden xl:flex items-center gap-1.5 px-3 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-medium transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
           title="ส่งออกไฟล์สำรอง JSON ทั้งหมด"
           aria-label="ส่งออกไฟล์สำรอง JSON"
         >
@@ -125,15 +238,17 @@ export const Header: React.FC<HeaderProps> = ({
         </button>
 
         {/* Import JSON Quick */}
-        <button
-          onClick={onImportClick}
-          className="min-h-[44px] hidden md:flex items-center gap-1.5 px-3.5 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-medium transition cursor-pointer"
-          title="นำเข้าไฟล์สำรอง JSON"
-          aria-label="นำเข้าไฟล์สำรอง JSON"
-        >
-          <Upload className="w-4 h-4 text-blue-600" />
-          <span>Import</span>
-        </button>
+        {hasMapManagePermission && (
+          <button
+            onClick={onImportClick}
+            className="min-h-[44px] hidden xl:flex items-center gap-1.5 px-3 rounded-xl border border-slate-200 hover:bg-slate-50 text-slate-700 text-xs font-medium transition cursor-pointer"
+            title="นำเข้าไฟล์สำรอง JSON"
+            aria-label="นำเข้าไฟล์สำรอง JSON"
+          >
+            <Upload className="w-4 h-4 text-blue-600" />
+            <span>Import</span>
+          </button>
+        )}
       </div>
     </header>
   );

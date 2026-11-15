@@ -1,5 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
-import type { FloorPlan, EquipmentPin, EquipmentType, EquipmentPhoto } from './types';
+import type {
+  FloorPlan,
+  EquipmentPin,
+  EquipmentType,
+  EquipmentPhoto,
+  UserProfile,
+  ConnectionStatus,
+} from './types';
 import {
   getAllFloorPlansFromDB,
   saveFloorPlanToDB,
@@ -15,6 +22,12 @@ import {
   getActiveMapIdFromDB,
   saveActiveMapIdToDB,
 } from './services/db';
+import {
+  getCurrentUser,
+  setCurrentUser as saveCurrentUserToStorage,
+  canEditEquipment,
+} from './services/auth';
+import { realtimeEngine } from './services/realtime/realtimeEngine';
 import { exportProjectToJSON, validateImportJSON } from './services/importExport';
 import { useMapTransform } from './hooks/useMapTransform';
 import { useToasts } from './hooks/useToasts';
@@ -26,6 +39,8 @@ import { MapUploadModal } from './components/map/MapUploadModal';
 import { MapEditModal } from './components/map/MapEditModal';
 import { EquipmentFormModal } from './components/equipment/EquipmentFormModal';
 import { EquipmentDetailDrawer } from './components/equipment/EquipmentDetailDrawer';
+import { AuthModal } from './components/auth/AuthModal';
+import { CloudConfigModal } from './components/cloud/CloudConfigModal';
 import { ConfirmModal } from './components/common/ConfirmModal';
 import { Lightbox } from './components/common/Lightbox';
 import { ToastContainer } from './components/common/ToastContainer';
@@ -33,18 +48,30 @@ import { ErrorBoundary } from './components/common/ErrorBoundary';
 import { Loader2 } from 'lucide-react';
 
 export const AppContent: React.FC = () => {
-  // 1. Data States (IndexedDB backed)
+  // 1. Data States (IndexedDB backed cache)
   const [maps, setMaps] = useState<FloorPlan[]>([]);
   const [activeMapId, setActiveMapId] = useState<string | null>(null);
   const [allEquipment, setAllEquipment] = useState<EquipmentPin[]>([]);
   const [isLoadingDB, setIsLoadingDB] = useState(true);
 
-  // 2. Interaction States
+  // 2. Auth & Realtime States
+  const [currentUser, setCurrentUser] = useState<UserProfile>(getCurrentUser());
+  const [connectionStatus, setConnectionStatus] = useState<ConnectionStatus>(
+    realtimeEngine.getStatus()
+  );
+  const [lastSyncAt, setLastSyncAt] = useState<Date | null>(realtimeEngine.getLastSyncAt());
+  const [offlineQueueCount, setOfflineQueueCount] = useState<number>(
+    realtimeEngine.getOfflineQueueCount()
+  );
+  const [isAuthModalOpen, setIsAuthModalOpen] = useState(false);
+  const [isCloudModalOpen, setIsCloudModalOpen] = useState(false);
+
+  // 3. Interaction States
   const [selectedPinId, setSelectedPinId] = useState<string | null>(null);
   const [isAddMode, setIsAddMode] = useState(false);
   const [hiddenTypes, setHiddenTypes] = useState<Set<EquipmentType>>(new Set());
 
-  // 3. Modal & Drawer States
+  // 4. Modal & Drawer States
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
   const [isEditMapModalOpen, setIsEditMapModalOpen] = useState(false);
   const [mapToEdit, setMapToEdit] = useState<FloorPlan | null>(null);
@@ -93,11 +120,10 @@ export const AppContent: React.FC = () => {
   const activeEquipment = activeMap ? allEquipment.filter((p) => p.mapId === activeMap.id) : [];
   const selectedPin = activeEquipment.find((p) => p.id === selectedPinId) || null;
 
-  // Initial load from IndexedDB (with safety timer)
+  // Initial load from IndexedDB cache (with 1000ms safety timer)
   useEffect(() => {
     let isMounted = true;
 
-    // ตัวจับเวลาความปลอดภัย: หากโหลดฐานข้อมูลนานเกิน 1000ms ให้เปิดหน้าต่างแอปทันที
     const safetyTimer = setTimeout(() => {
       if (isMounted) {
         setIsLoadingDB(false);
@@ -140,6 +166,110 @@ export const AppContent: React.FC = () => {
     };
   }, []);
 
+  // Initialize Real-time Engine & Setup Subscriptions
+  useEffect(() => {
+    realtimeEngine.init();
+
+    const unsubscribe = realtimeEngine.subscribe({
+      onStatusChange: (status) => {
+        setConnectionStatus(status);
+        setOfflineQueueCount(realtimeEngine.getOfflineQueueCount());
+      },
+      onLastSyncChange: (date) => {
+        setLastSyncAt(date);
+      },
+      onRemotePinUpsert: (remotePin, senderName) => {
+        setAllEquipment((prev) => {
+          const existing = prev.find((p) => p.id === remotePin.id);
+          // ป้องกันข้อมูลชนกัน (Optimistic Concurrency Control):
+          // หากข้อมูลในเครื่องมี version สูงกว่าหรือเท่ากันและเพิ่งแก้ไข ให้คงค่าเดิมไว้
+          if (
+            existing &&
+            existing.version &&
+            remotePin.version &&
+            existing.version > remotePin.version
+          ) {
+            return prev;
+          }
+
+          if (existing) {
+            return prev.map((p) => (p.id === remotePin.id ? remotePin : p));
+          } else {
+            return [...prev, remotePin];
+          }
+        });
+
+        // อัปเดตลงหน่วยความจำแคชในเครื่องทันที
+        saveEquipmentToDB(remotePin);
+
+        addToast({
+          type: 'info',
+          title: 'หมุดอัปเดตเรียลไทม์',
+          message: `"${remotePin.name}" (${remotePin.code}) ถูกอัปเดตโดย ${senderName}`,
+          duration: 2500,
+        });
+      },
+      onRemotePinDelete: (pinId, senderName) => {
+        setAllEquipment((prev) => prev.filter((p) => p.id !== pinId));
+        deleteEquipmentFromDB(pinId);
+
+        if (selectedPinId === pinId) {
+          setSelectedPinId(null);
+          setIsDetailOpen(false);
+        }
+
+        addToast({
+          type: 'info',
+          title: 'หมุดถูกลบเรียลไทม์',
+          message: `หมุดถูกลบโดย ${senderName}`,
+          duration: 2500,
+        });
+      },
+      onRemoteMapUpsert: (remoteMap, senderName) => {
+        setMaps((prev) => {
+          const idx = prev.findIndex((m) => m.id === remoteMap.id);
+          if (idx >= 0) {
+            return prev.map((m) => (m.id === remoteMap.id ? remoteMap : m));
+          } else {
+            return [...prev, remoteMap];
+          }
+        });
+        saveFloorPlanToDB(remoteMap);
+
+        addToast({
+          type: 'info',
+          title: 'แผนที่อัปเดตเรียลไทม์',
+          message: `แผนที่ "${remoteMap.name}" ถูกปรับปรุงโดย ${senderName}`,
+          duration: 2500,
+        });
+      },
+      onRemoteMapDelete: (mapId, senderName) => {
+        setMaps((prev) => prev.filter((m) => m.id !== mapId));
+        deleteFloorPlanFromDB(mapId);
+
+        addToast({
+          type: 'info',
+          title: 'แผนที่ถูกลบเรียลไทม์',
+          message: `แผนที่ถูกลบโดย ${senderName}`,
+          duration: 2500,
+        });
+      },
+      onOfflineQueueSynced: (count) => {
+        setOfflineQueueCount(0);
+        addToast({
+          type: 'success',
+          title: 'ซิงก์ข้อมูลออฟไลน์สำเร็จ',
+          message: `ข้อมูลที่บันทึกไว้ระหว่างออฟไลน์ ${count} รายการถูกส่งขึ้นระบบเรียลไทม์แล้ว`,
+          duration: 3500,
+        });
+      },
+    });
+
+    return () => {
+      unsubscribe();
+    };
+  }, [addToast, selectedPinId]);
+
   // Keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -166,6 +296,33 @@ export const AppContent: React.FC = () => {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isAddMode, zoomIn, zoomOut, addToast]);
 
+  // Handle Switch User / Login
+  const handleSelectUser = (user: UserProfile) => {
+    setCurrentUser(user);
+    saveCurrentUserToStorage(user);
+    addToast({
+      type: 'success',
+      title: 'เข้าสู่ระบบสำเร็จ',
+      message: `คุณเข้าใช้งานในฐานะ ${user.name} (${user.role.toUpperCase()})`,
+    });
+  };
+
+  const handleLogout = () => {
+    saveCurrentUserToStorage(null);
+    setCurrentUser({
+      id: 'guest',
+      name: 'ผู้เยี่ยมชม (Guest)',
+      email: 'guest@local',
+      role: 'viewer',
+      avatar: '👤',
+    });
+    addToast({
+      type: 'info',
+      title: 'ออกจากระบบแล้ว',
+      message: 'สลับไปยังโหมดผู้ดูข้อมูล (Viewer) เรียบร้อย',
+    });
+  };
+
   // Handle Switch Active Map
   const handleSelectMap = async (mapId: string) => {
     if (mapId === activeMapId) return;
@@ -189,15 +346,25 @@ export const AppContent: React.FC = () => {
   // Handle Save New Map
   const handleSaveFloorPlan = async (newMap: FloorPlan) => {
     try {
-      await saveFloorPlanToDB(newMap);
-      setMaps((prev) => [...prev, newMap]);
-      setActiveMapId(newMap.id);
-      await saveActiveMapIdToDB(newMap.id);
+      const planToSave: FloorPlan = {
+        ...newMap,
+        updatedAt: new Date().toISOString(),
+        updatedBy: `${currentUser.name} (${currentUser.role})`,
+        version: 1,
+      };
+
+      await saveFloorPlanToDB(planToSave);
+      setMaps((prev) => [...prev, planToSave]);
+      setActiveMapId(planToSave.id);
+      await saveActiveMapIdToDB(planToSave.id);
+
+      // กระจาย Realtime ขึ้นคลาวด์และอุปกรณ์อื่น
+      await realtimeEngine.broadcastMapUpsert(planToSave);
 
       addToast({
         type: 'success',
         title: 'เพิ่มแผนที่สำเร็จ',
-        message: `แผนที่ "${newMap.name}" พร้อมใช้งานแล้ว`,
+        message: `แผนที่ "${planToSave.name}" ซิงก์ออนไลน์เรียบร้อยแล้ว`,
       });
     } catch (err) {
       console.error('Failed to save map:', err);
@@ -212,10 +379,21 @@ export const AppContent: React.FC = () => {
   // Handle Edit Map Name
   const handleSaveMapName = async (mapId: string, newName: string) => {
     try {
+      const existing = maps.find((m) => m.id === mapId);
+      const updatedMap: FloorPlan = {
+        ...(existing || ({} as FloorPlan)),
+        id: mapId,
+        name: newName,
+        updatedAt: new Date().toISOString(),
+        updatedBy: `${currentUser.name} (${currentUser.role})`,
+        version: ((existing?.version || 1) + 1),
+      };
+
       await updateFloorPlanNameInDB(mapId, newName);
-      setMaps((prev) =>
-        prev.map((m) => (m.id === mapId ? { ...m, name: newName, updatedAt: new Date().toISOString() } : m))
-      );
+      setMaps((prev) => prev.map((m) => (m.id === mapId ? updatedMap : m)));
+
+      await realtimeEngine.broadcastMapUpsert(updatedMap);
+
       addToast({
         type: 'success',
         title: 'เปลี่ยนชื่อแผนที่สำเร็จ',
@@ -245,7 +423,9 @@ export const AppContent: React.FC = () => {
       setAllEquipment(remainingEquipment);
       setMapToDelete(null);
 
-      // ถ้าแผนที่ที่ลบคือแผนที่ที่กำลังเปิดดูอยู่ ให้สลับไปแผนที่แรกที่เหลือ
+      // กระจายคำสั่งลบไปยังอุปกรณ์อื่นแบบเรียลไทม์
+      await realtimeEngine.broadcastMapDelete(deletedId);
+
       if (activeMapId === deletedId) {
         const nextMap = remainingMaps[0] || null;
         const nextId = nextMap ? nextMap.id : null;
@@ -270,6 +450,14 @@ export const AppContent: React.FC = () => {
   // Handle Click on Map to Add Pin
   const handleMapClickToAdd = (coords: { x: number; y: number }) => {
     if (!activeMap) return;
+    if (!canEditEquipment(currentUser)) {
+      addToast({
+        type: 'warning',
+        title: 'ไม่มีสิทธิ์เพิ่มจุดติดตั้ง',
+        message: 'กรุณาเข้าสู่ระบบด้วยสิทธิ์ผู้แก้ไข (Editor) หรือผู้ดูแลระบบ (Admin)',
+      });
+      return;
+    }
     setPendingCoords(coords);
     setFormInitialData(null);
     setIsFormModalOpen(true);
@@ -285,13 +473,16 @@ export const AppContent: React.FC = () => {
     const now = new Date().toISOString();
     const isNew = !data.id;
     const pinId = data.id || `eq-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+    const existing = data.id ? allEquipment.find((p) => p.id === data.id) : null;
 
     const savedPin: EquipmentPin = {
       ...data,
       id: pinId,
       mapId: data.mapId || activeMap.id,
-      createdAt: data.id ? allEquipment.find((p) => p.id === data.id)?.createdAt || now : now,
+      createdAt: existing ? existing.createdAt : now,
       updatedAt: now,
+      updatedBy: `${currentUser.name} (${currentUser.role})`,
+      version: (existing?.version || 0) + 1,
     };
 
     try {
@@ -307,10 +498,13 @@ export const AppContent: React.FC = () => {
       setSelectedPinId(pinId);
       setIsDetailOpen(true);
 
+      // กระจาย Realtime ออกไปยังผู้ใช้อื่นทันที
+      await realtimeEngine.broadcastPinUpsert(savedPin);
+
       addToast({
         type: 'success',
         title: isNew ? 'เพิ่มจุดติดตั้งสำเร็จ' : 'แก้ไขข้อมูลอุปกรณ์สำเร็จ',
-        message: `${savedPin.name} (${savedPin.code}) บน ${activeMap.name}`,
+        message: `${savedPin.name} (${savedPin.code}) ซิงก์ออนไลน์เรียบร้อย`,
       });
     } catch (err) {
       console.error('Failed to save equipment:', err);
@@ -321,8 +515,17 @@ export const AppContent: React.FC = () => {
     }
   };
 
-  // Handle Move Pin Coordinates
+  // Handle Move Pin Coordinates (Drag & Drop)
   const handleMovePin = async (pinId: string, newX: number, newY: number) => {
+    if (!canEditEquipment(currentUser)) {
+      addToast({
+        type: 'warning',
+        title: 'ไม่มีสิทธิ์ย้ายตำแหน่ง',
+        message: 'กรุณาเข้าสู่ระบบด้วยสิทธิ์ผู้แก้ไข (Editor) หรือผู้ดูแลระบบ (Admin)',
+      });
+      return;
+    }
+
     const pin = allEquipment.find((p) => p.id === pinId);
     if (!pin) return;
 
@@ -331,14 +534,20 @@ export const AppContent: React.FC = () => {
       x: newX,
       y: newY,
       updatedAt: new Date().toISOString(),
+      updatedBy: `${currentUser.name} (${currentUser.role})`,
+      version: (pin.version || 1) + 1,
     };
 
     try {
       await saveEquipmentToDB(updatedPin);
       setAllEquipment((prev) => prev.map((item) => (item.id === pinId ? updatedPin : item)));
+
+      // กระจาย Realtime พิกัดใหม่ทันที ไม่กระตุก
+      await realtimeEngine.broadcastPinUpsert(updatedPin);
+
       addToast({
         type: 'info',
-        title: 'ย้ายตำแหน่งจุดติดตั้งแล้ว',
+        title: 'ย้ายตำแหน่งและซิงก์เรียลไทม์แล้ว',
         message: `${pin.code}: ${(newX * 100).toFixed(1)}%, ${(newY * 100).toFixed(1)}%`,
         duration: 2000,
       });
@@ -362,10 +571,13 @@ export const AppContent: React.FC = () => {
       }
       setPinToDelete(null);
 
+      // กระจายคำสั่งลบเรียลไทม์
+      await realtimeEngine.broadcastPinDelete(id);
+
       addToast({
         type: 'success',
         title: 'ลบจุดติดตั้งสำเร็จ',
-        message: `ลบ ${name} ออกจากระบบแล้ว`,
+        message: `ลบ ${name} และซิงก์เรียลไทม์แล้ว`,
       });
     } catch (err) {
       console.error('Failed to delete equipment:', err);
@@ -380,25 +592,22 @@ export const AppContent: React.FC = () => {
   const handleConfirmClearActiveEquipment = async () => {
     if (!activeMap) return;
     try {
-      const activeIds = new Set(activeEquipment.map((p) => p.id));
-      for (const id of activeIds) {
-        await deleteEquipmentFromDB(id);
+      for (const eq of activeEquipment) {
+        await deleteEquipmentFromDB(eq.id);
+        await realtimeEngine.broadcastPinDelete(eq.id);
       }
-
       setAllEquipment((prev) => prev.filter((p) => p.mapId !== activeMap.id));
       setSelectedPinId(null);
       setIsDetailOpen(false);
       setIsClearActivePinsConfirmOpen(false);
 
       addToast({
-        type: 'info',
-        title: `ลบจุดติดตั้งบน "${activeMap.name}" ทั้งหมดแล้ว`,
+        type: 'success',
+        title: 'ล้างข้อมูลหมุดบนแผนที่นี้สำเร็จ',
+        message: `ลบหมุดจำนวน ${activeEquipment.length} จุดบน "${activeMap.name}" เรียบร้อยแล้ว`,
       });
     } catch {
-      addToast({
-        type: 'error',
-        title: 'เกิดข้อผิดพลาดในการลบข้อมูล',
-      });
+      addToast({ type: 'error', title: 'เกิดข้อผิดพลาดในการล้างข้อมูลหมุด' });
     }
   };
 
@@ -417,37 +626,83 @@ export const AppContent: React.FC = () => {
       setIsClearAllDataConfirmOpen(false);
 
       addToast({
-        type: 'info',
-        title: 'ล้างข้อมูลทั้งหมดในระบบเรียบร้อยแล้ว',
+        type: 'success',
+        title: 'ล้างข้อมูลทั้งหมดสำเร็จ',
+        message: 'ระบบกลับสู่สถานะเริ่มต้นเรียบร้อยแล้ว',
       });
     } catch {
+      addToast({ type: 'error', title: 'เกิดข้อผิดพลาดในการล้างข้อมูลระบบ' });
+    }
+  };
+
+  // Export JSON Backup
+  const handleExportJSON = () => {
+    try {
+      exportProjectToJSON(maps, allEquipment, activeMapId);
+      addToast({
+        type: 'success',
+        title: 'ส่งออกไฟล์สำรองสำเร็จ',
+        message: `บันทึกข้อมูล ${maps.length} แผนที่ และ ${allEquipment.length} หมุด`,
+      });
+    } catch (err) {
+      console.error('Export failed:', err);
+      addToast({ type: 'error', title: 'การส่งออกไฟล์ล้มเหลว' });
+    }
+  };
+
+  // Import JSON Backup
+  const handleImportFile = async (file: File) => {
+    try {
+      const result = await validateImportJSON(file);
+      if (!result.valid || !result.data) {
+        addToast({
+          type: 'error',
+          title: 'ไฟล์ JSON ไม่ถูกต้อง',
+          message: result.error || 'โครงสร้างไฟล์ไม่ตรงตามมาตรฐานที่กำหนด',
+        });
+        return;
+      }
+
+      await saveAllFloorPlansToDB(result.data.maps);
+      await saveAllEquipmentToDB(result.data.equipment);
+
+      setMaps(result.data.maps);
+      setAllEquipment(result.data.equipment);
+
+      const nextActiveId =
+        result.data.activeMapId && result.data.maps.some((m) => m.id === result.data!.activeMapId)
+          ? result.data.activeMapId
+          : result.data.maps[0]?.id || null;
+
+      setActiveMapId(nextActiveId);
+      await saveActiveMapIdToDB(nextActiveId);
+
+      setSelectedPinId(null);
+      setIsDetailOpen(false);
+
+      // กระจาย Realtime ชุดข้อมูลใหม่
+      for (const m of result.data.maps) {
+        realtimeEngine.broadcastMapUpsert(m);
+      }
+      for (const p of result.data.equipment) {
+        realtimeEngine.broadcastPinUpsert(p);
+      }
+
+      addToast({
+        type: 'success',
+        title: 'นำเข้าข้อมูลสำเร็จ',
+        message: `นำเข้า ${result.data.maps.length} แผนที่ และ ${result.data.equipment.length} หมุดอุปกรณ์`,
+      });
+    } catch (err) {
+      console.error('Import failed:', err);
       addToast({
         type: 'error',
-        title: 'เกิดข้อผิดพลาดในการล้างข้อมูล',
+        title: 'นำเข้าข้อมูลล้มเหลว',
+        message: 'กรุณาตรวจสอบว่าไฟล์ JSON สมบูรณ์และถูกต้อง',
       });
     }
   };
 
-  // Focus Pin
-  const handleFocusPin = (pin: EquipmentPin) => {
-    if (!activeMap) return;
-    const container = document.querySelector('.cursor-grab, .cursor-crosshair') as HTMLElement;
-    if (container) {
-      const { clientWidth, clientHeight } = container;
-      const targetScale = Math.max(1.2, transform.scale);
-      const targetPinX = pin.x * activeMap.width * targetScale;
-      const targetPinY = pin.y * activeMap.height * targetScale;
-
-      const translateX = clientWidth / 2 - targetPinX;
-      const translateY = clientHeight / 2 - targetPinY;
-
-      transform.scale = targetScale;
-      transform.translateX = Math.round(translateX);
-      transform.translateY = Math.round(translateY);
-    }
-  };
-
-  // Visibility toggle
   const handleToggleTypeVisibility = (type: EquipmentType) => {
     setHiddenTypes((prev) => {
       const next = new Set(prev);
@@ -460,76 +715,24 @@ export const AppContent: React.FC = () => {
     });
   };
 
-  // JSON Export (All maps and all pins)
-  const handleExportJSON = () => {
-    try {
-      exportProjectToJSON(maps, allEquipment, activeMapId);
-      addToast({
-        type: 'success',
-        title: 'ส่งออกข้อมูลสำเร็จ',
-        message: `${maps.length} แผนที่ และจุดติดตั้ง ${allEquipment.length} รายการ`,
-      });
-    } catch (err) {
-      console.error('Export failed:', err);
-      addToast({
-        type: 'error',
-        title: 'เกิดข้อผิดพลาดในการส่งออกไฟล์',
-      });
-    }
-  };
+  const handleFocusPin = (pin: EquipmentPin) => {
+    if (!activeMap) return;
+    const container = document.querySelector('.cursor-grab, .cursor-crosshair') as HTMLElement;
+    if (!container) return;
 
-  // JSON Import
-  const handleImportFile = async (file: File) => {
-    try {
-      const text = await file.text();
-      const parsed = JSON.parse(text);
-      const result = validateImportJSON(parsed);
+    const targetScale = Math.max(transform.scale, 1.5);
+    const containerW = container.clientWidth;
+    const containerH = container.clientHeight;
+    const pinPixelX = pin.x * activeMap.width * targetScale;
+    const pinPixelY = pin.y * activeMap.height * targetScale;
 
-      if (!result.valid || !result.data) {
-        addToast({
-          type: 'error',
-          title: 'ไฟล์ JSON ไม่ถูกต้อง',
-          message: result.error || 'โครงสร้างไฟล์ไม่ตรงกับระบบ',
-        });
-        return;
-      }
+    const newTranslateX = containerW / 2 - pinPixelX;
+    const newTranslateY = containerH / 2 - pinPixelY;
 
-      const importedData = result.data;
-
-      // บันทึกลง IndexedDB
-      await clearAllFloorPlansFromDB();
-      await saveAllFloorPlansToDB(importedData.maps);
-
-      await clearAllEquipmentFromDB();
-      await saveAllEquipmentToDB(importedData.equipment);
-
-      setMaps(importedData.maps);
-      setAllEquipment(importedData.equipment);
-
-      const targetActiveId =
-        importedData.activeMapId && importedData.maps.some((m) => m.id === importedData.activeMapId)
-          ? importedData.activeMapId
-          : importedData.maps[0]?.id || null;
-
-      setActiveMapId(targetActiveId);
-      await saveActiveMapIdToDB(targetActiveId);
-
-      setSelectedPinId(null);
-      setIsDetailOpen(false);
-
-      addToast({
-        type: 'success',
-        title: 'นำเข้าข้อมูลสำเร็จ',
-        message: `โหลด ${importedData.maps.length} แผนที่ และ ${importedData.equipment.length} จุดติดตั้งแล้ว`,
-      });
-    } catch (err) {
-      console.error('Import failed:', err);
-      addToast({
-        type: 'error',
-        title: 'ไม่สามารถนำเข้าข้อมูลได้',
-        message: err instanceof Error ? err.message : 'ไฟล์ JSON มีความเสียหาย',
-      });
-    }
+    zoomAtPoint(0, 0, 0, container.getBoundingClientRect());
+    startPan(0, 0);
+    updatePan(newTranslateX - transform.translateX, newTranslateY - transform.translateY);
+    endPan();
   };
 
   const handleOpenLightbox = (photos: EquipmentPhoto[], index: number) => {
@@ -543,7 +746,7 @@ export const AppContent: React.FC = () => {
       <div className="min-h-screen w-full flex flex-col items-center justify-center bg-slate-50 text-slate-800 p-6 text-center">
         <Loader2 className="w-10 h-10 text-blue-600 animate-spin mb-4" />
         <p className="text-base font-semibold text-slate-700">กำลังโหลดระบบจัดการแผนที่อุปกรณ์...</p>
-        <p className="text-xs text-slate-500 mt-1 mb-6">กำลังเชื่อมต่อพื้นที่จัดเก็บข้อมูล</p>
+        <p className="text-xs text-slate-500 mt-1 mb-6">กำลังเชื่อมต่อพื้นที่จัดเก็บข้อมูลและ Real-time คลาวด์</p>
         <button
           type="button"
           onClick={() => setIsLoadingDB(false)}
@@ -563,10 +766,22 @@ export const AppContent: React.FC = () => {
         activeMap={activeMap}
         equipment={activeEquipment}
         isAddMode={isAddMode}
+        currentUser={currentUser}
+        connectionStatus={connectionStatus}
+        lastSyncAt={lastSyncAt}
+        offlineQueueCount={offlineQueueCount}
         onSelectMap={handleSelectMap}
         onToggleAddMode={() => {
           if (!activeMap) {
             setIsUploadModalOpen(true);
+            return;
+          }
+          if (!canEditEquipment(currentUser)) {
+            addToast({
+              type: 'warning',
+              title: 'ไม่มีสิทธิ์เพิ่มจุดติดตั้ง',
+              message: 'กรุณาเข้าสู่ระบบด้วยสิทธิ์ผู้แก้ไข (Editor) หรือผู้ดูแลระบบ (Admin)',
+            });
             return;
           }
           setIsAddMode((prev) => !prev);
@@ -575,6 +790,8 @@ export const AppContent: React.FC = () => {
         onOpenMobileSidebar={() => setIsMobileSidebarOpen(true)}
         onExportJSON={handleExportJSON}
         onImportClick={() => importFileInputRef.current?.click()}
+        onOpenAuthModal={() => setIsAuthModalOpen(true)}
+        onOpenCloudModal={() => setIsCloudModalOpen(true)}
       />
 
       {/* Hidden File Input for JSON Import */}
@@ -600,6 +817,7 @@ export const AppContent: React.FC = () => {
           activeMapId={activeMapId}
           equipment={activeEquipment}
           allEquipment={allEquipment}
+          currentUser={currentUser}
           selectedPinId={selectedPinId}
           hiddenTypes={hiddenTypes}
           isOpen={isSidebarOpen}
@@ -636,6 +854,7 @@ export const AppContent: React.FC = () => {
             hiddenTypes={hiddenTypes}
             selectedPinId={selectedPinId}
             isAddMode={isAddMode}
+            canDragPins={canEditEquipment(currentUser)}
             transform={transform}
             onSelectPin={(pin) => {
               setSelectedPinId(pin.id);
@@ -660,10 +879,13 @@ export const AppContent: React.FC = () => {
               scale={transform.scale}
               isAddMode={isAddMode}
               hasFloorPlan={Boolean(activeMap)}
+              canAddPin={canEditEquipment(currentUser)}
               onZoomIn={zoomIn}
               onZoomOut={zoomOut}
               onFitToScreen={() => {
-                const container = document.querySelector('.cursor-grab, .cursor-crosshair') as HTMLElement;
+                const container = document.querySelector(
+                  '.cursor-grab, .cursor-crosshair'
+                ) as HTMLElement;
                 if (container && activeMap) {
                   fitToScreen(
                     container.clientWidth,
@@ -674,7 +896,9 @@ export const AppContent: React.FC = () => {
                 }
               }}
               onResetView={() => {
-                const container = document.querySelector('.cursor-grab, .cursor-crosshair') as HTMLElement;
+                const container = document.querySelector(
+                  '.cursor-grab, .cursor-crosshair'
+                ) as HTMLElement;
                 if (container && activeMap) {
                   resetView(
                     container.clientWidth,
@@ -689,6 +913,14 @@ export const AppContent: React.FC = () => {
                   setIsUploadModalOpen(true);
                   return;
                 }
+                if (!canEditEquipment(currentUser)) {
+                  addToast({
+                    type: 'warning',
+                    title: 'ไม่มีสิทธิ์เพิ่มจุดติดตั้ง',
+                    message: 'กรุณาเข้าสู่ระบบด้วยสิทธิ์ผู้แก้ไข (Editor) หรือผู้ดูแลระบบ (Admin)',
+                  });
+                  return;
+                }
                 setIsAddMode((prev) => !prev);
               }}
               onOpenUploadModal={() => setIsUploadModalOpen(true)}
@@ -700,6 +932,7 @@ export const AppContent: React.FC = () => {
             pin={selectedPin}
             mapName={activeMap?.name}
             isOpen={isDetailOpen && Boolean(selectedPin)}
+            currentUser={currentUser}
             onClose={() => {
               setIsDetailOpen(false);
               setSelectedPinId(null);
@@ -716,7 +949,7 @@ export const AppContent: React.FC = () => {
         </main>
       </div>
 
-      {/* Upload/Add New Map Modal */}
+      {/* Upload New Map Modal */}
       <MapUploadModal
         isOpen={isUploadModalOpen}
         mapCount={maps.length}
@@ -748,7 +981,7 @@ export const AppContent: React.FC = () => {
           setFormInitialData(null);
         }}
         onSave={handleSaveEquipment}
-        onViewPhoto={handleOpenLightbox}
+        onViewPhoto={(photos, idx) => handleOpenLightbox(photos, idx)}
       />
 
       {/* Photo Lightbox */}
@@ -760,7 +993,25 @@ export const AppContent: React.FC = () => {
         onNavigate={(idx) => setLightboxIndex(idx)}
       />
 
-      {/* Confirm Delete Single Pin Modal */}
+      {/* Auth & RBAC Modal */}
+      <AuthModal
+        isOpen={isAuthModalOpen}
+        currentUser={currentUser}
+        onClose={() => setIsAuthModalOpen(false)}
+        onSelectUser={handleSelectUser}
+        onLogout={handleLogout}
+      />
+
+      {/* Cloud & Realtime Config Modal */}
+      <CloudConfigModal
+        isOpen={isCloudModalOpen}
+        status={connectionStatus}
+        lastSyncAt={lastSyncAt}
+        onClose={() => setIsCloudModalOpen(false)}
+        onTriggerSync={() => realtimeEngine.flushOfflineQueue()}
+      />
+
+      {/* Confirmation: Delete Single Pin */}
       <ConfirmModal
         isOpen={Boolean(pinToDelete)}
         title="ยืนยันการลบจุดติดตั้ง"
@@ -772,7 +1023,7 @@ export const AppContent: React.FC = () => {
         onCancel={() => setPinToDelete(null)}
       />
 
-      {/* Confirm Delete Map Modal */}
+      {/* Confirmation: Delete Floor Plan */}
       <ConfirmModal
         isOpen={Boolean(mapToDelete)}
         title="ยืนยันการลบแผนที่ผังอาคาร"
@@ -784,7 +1035,7 @@ export const AppContent: React.FC = () => {
         onCancel={() => setMapToDelete(null)}
       />
 
-      {/* Confirm Clear Active Map Pins Modal */}
+      {/* Confirmation: Clear Active Map Pins */}
       <ConfirmModal
         isOpen={isClearActivePinsConfirmOpen}
         title="ยืนยันการลบหมุดบนแผนที่นี้"
@@ -796,7 +1047,7 @@ export const AppContent: React.FC = () => {
         onCancel={() => setIsClearActivePinsConfirmOpen(false)}
       />
 
-      {/* Confirm Clear All Data Modal */}
+      {/* Confirmation: Clear All System Data */}
       <ConfirmModal
         isOpen={isClearAllDataConfirmOpen}
         title="ยืนยันการล้างข้อมูลทั้งหมดในระบบ"
@@ -808,7 +1059,7 @@ export const AppContent: React.FC = () => {
         onCancel={() => setIsClearAllDataConfirmOpen(false)}
       />
 
-      {/* Global Toast Container */}
+      {/* Toast Notifications */}
       <ToastContainer toasts={toasts} onRemove={removeToast} />
     </div>
   );

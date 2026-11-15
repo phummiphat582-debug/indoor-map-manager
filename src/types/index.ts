@@ -9,6 +9,22 @@ export type EquipmentType = 'cctv' | 'fire_extinguisher' | 'smoke_detector' | 'r
 export type EquipmentStatus = 'normal' | 'maintenance' | 'defective';
 
 /**
+ * สิทธิ์ผู้ใช้งานในระบบ (Role-based Access Control)
+ */
+export type UserRole = 'admin' | 'editor' | 'viewer';
+
+/**
+ * ข้อมูลโปรไฟล์ผู้ใช้งาน
+ */
+export interface UserProfile {
+  id: string;
+  name: string;
+  email: string;
+  role: UserRole;
+  avatar?: string;
+}
+
+/**
  * รูปภาพแนบของอุปกรณ์
  */
 export interface EquipmentPhoto {
@@ -39,6 +55,8 @@ export interface EquipmentPin {
   photos: EquipmentPhoto[];   // รูปภาพจริงของอุปกรณ์
   createdAt: string;          // วันที่สร้าง
   updatedAt: string;          // วันที่แก้ไขล่าสุด
+  updatedBy?: string;         // ชื่อผู้แก้ไขล่าสุด (เช่น "สมศักดิ์ (Admin)")
+  version?: number;           // เลขเวอร์ชันสำหรับป้องกันข้อมูลชนกัน (Optimistic Concurrency)
 }
 
 /**
@@ -54,6 +72,8 @@ export interface FloorPlan {
   fileSize: number;           // ขนาดไฟล์ (bytes)
   uploadedAt: string;         // วันที่อัปโหลด
   updatedAt?: string;         // วันที่แก้ไขล่าสุด
+  updatedBy?: string;         // ผู้แก้ไขล่าสุด
+  version?: number;
 }
 
 /**
@@ -114,4 +134,47 @@ export interface ToastMessage {
   title: string;
   message?: string;
   duration?: number;
+}
+
+/**
+ * สถานะการเชื่อมต่อเครือข่ายออนไลน์แบบเรียลไทม์
+ */
+export type ConnectionStatus = 'connected' | 'connecting' | 'offline' | 'error';
+
+/**
+ * ผู้ให้บริการคลาวด์เรียลไทม์
+ */
+export type RealtimeProviderType = 'cloud-relay' | 'supabase';
+
+/**
+ * การตั้งค่าคลาวด์และเรียลไทม์
+ */
+export interface CloudConfig {
+  provider: RealtimeProviderType;
+  roomId: string;
+  supabaseUrl?: string;
+  supabaseAnonKey?: string;
+  autoSync: boolean;
+}
+
+/**
+ * รายการคำสั่งบันทึกข้อมูลตอนออฟไลน์ (Offline Sync Queue)
+ */
+export interface OfflineMutation {
+  id: string;
+  action: 'UPSERT_PIN' | 'DELETE_PIN' | 'UPSERT_MAP' | 'DELETE_MAP';
+  payload: any;
+  timestamp: string;
+  retryCount: number;
+}
+
+/**
+ * โครงสร้างข้อความสำหรับ Realtime Broadcast
+ */
+export interface RealtimeMessage {
+  type: 'PIN_UPSERT' | 'PIN_DELETE' | 'MAP_UPSERT' | 'MAP_DELETE' | 'REQUEST_SYNC' | 'RESPONSE_SYNC';
+  senderId: string;
+  senderName: string;
+  timestamp: string;
+  payload: any;
 }

@@ -7,6 +7,7 @@ interface EquipmentPinMarkerProps {
   pin: EquipmentPin;
   isSelected: boolean;
   mapScale: number;
+  canDrag?: boolean;
   onSelect: (pin: EquipmentPin) => void;
   onMove: (pinId: string, newX: number, newY: number) => void;
 }
@@ -15,6 +16,7 @@ export const EquipmentPinMarker: React.FC<EquipmentPinMarkerProps> = ({
   pin,
   isSelected,
   mapScale,
+  canDrag = true,
   onSelect,
   onMove,
 }) => {
@@ -33,6 +35,11 @@ export const EquipmentPinMarker: React.FC<EquipmentPinMarkerProps> = ({
     if (e.button !== 0) return;
     e.stopPropagation();
 
+    if (!canDrag) {
+      onSelect(pin);
+      return;
+    }
+
     const target = e.currentTarget;
     target.setPointerCapture(e.pointerId);
 
@@ -40,7 +47,7 @@ export const EquipmentPinMarker: React.FC<EquipmentPinMarkerProps> = ({
     hasMovedRef.current = false;
     setIsDragging(true);
     setDragOffset({ x: pin.x, y: pin.y });
-  }, [pin.x, pin.y]);
+  }, [canDrag, onSelect, pin]);
 
   const handlePointerMove = useCallback(
     (e: React.PointerEvent<HTMLDivElement>) => {
@@ -119,9 +126,9 @@ export const EquipmentPinMarker: React.FC<EquipmentPinMarkerProps> = ({
         transformOrigin: 'bottom center',
         zIndex: isDragging ? 50 : isSelected ? 40 : 20,
       }}
-      className={`group cursor-grab active:cursor-grabbing select-none transition-shadow touch-none ${
-        isDragging ? 'opacity-90 scale-110' : ''
-      }`}
+      className={`group select-none transition-shadow touch-none ${
+        canDrag ? 'cursor-grab active:cursor-grabbing' : 'cursor-pointer'
+      } ${isDragging ? 'opacity-90 scale-110' : ''}`}
     >
       {/* Pin Body */}
       <div

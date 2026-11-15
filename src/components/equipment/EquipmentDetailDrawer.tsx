@@ -11,14 +11,18 @@ import {
   Camera,
   Crosshair,
   Image as ImageIcon,
+  UserCheck,
+  Lock,
 } from 'lucide-react';
-import type { EquipmentPin, EquipmentPhoto } from '../../types';
+import type { EquipmentPin, EquipmentPhoto, UserProfile } from '../../types';
 import { EQUIPMENT_TYPES, EQUIPMENT_STATUSES } from '../../constants/equipmentConfig';
+import { canEditEquipment, canDeleteEquipment } from '../../services/auth';
 
 interface EquipmentDetailDrawerProps {
   pin: EquipmentPin | null;
   mapName?: string;
   isOpen: boolean;
+  currentUser: UserProfile;
   onClose: () => void;
   onEdit: (pin: EquipmentPin) => void;
   onDeleteRequest: (pin: EquipmentPin) => void;
@@ -30,6 +34,7 @@ export const EquipmentDetailDrawer: React.FC<EquipmentDetailDrawerProps> = ({
   pin,
   mapName,
   isOpen,
+  currentUser,
   onClose,
   onEdit,
   onDeleteRequest,
@@ -40,6 +45,8 @@ export const EquipmentDetailDrawer: React.FC<EquipmentDetailDrawerProps> = ({
 
   const typeConfig = EQUIPMENT_TYPES[pin.type] || EQUIPMENT_TYPES.cctv;
   const statusConfig = EQUIPMENT_STATUSES[pin.status] || EQUIPMENT_STATUSES.normal;
+  const hasEditPermission = canEditEquipment(currentUser);
+  const hasDeletePermission = canDeleteEquipment(currentUser);
 
   return (
     <>
@@ -117,14 +124,40 @@ export const EquipmentDetailDrawer: React.FC<EquipmentDetailDrawerProps> = ({
               <Crosshair className="w-4 h-4 text-blue-600" />
               <span>โฟกัสบนแผนที่</span>
             </button>
-            <button
-              onClick={() => onEdit(pin)}
-              className="flex-1 min-h-[44px] flex items-center justify-center gap-2 px-3 rounded-xl bg-blue-50 hover:bg-blue-100 text-blue-700 text-xs font-semibold transition border border-blue-200 cursor-pointer"
-              aria-label="แก้ไขข้อมูลจุดติดตั้ง"
-            >
-              <Edit3 className="w-4 h-4" />
-              <span>แก้ไขข้อมูล</span>
-            </button>
+
+            {hasEditPermission ? (
+              <button
+                onClick={() => onEdit(pin)}
+                className="flex-1 min-h-[44px] flex items-center justify-center gap-2 px-3 rounded-xl bg-blue-50 hover:bg-blue-100 text-blue-700 text-xs font-semibold transition border border-blue-200 cursor-pointer"
+                aria-label="แก้ไขข้อมูลจุดติดตั้ง"
+              >
+                <Edit3 className="w-4 h-4" />
+                <span>แก้ไขข้อมูล</span>
+              </button>
+            ) : (
+              <div className="flex-1 min-h-[44px] flex items-center justify-center gap-1.5 px-3 rounded-xl bg-slate-100 text-slate-400 text-xs font-medium border border-slate-200">
+                <Lock className="w-3.5 h-3.5" />
+                <span>เฉพาะผู้มีสิทธิ์แก้ไข</span>
+              </div>
+            )}
+          </div>
+
+          {/* Real-time Metadata (Last Edited By & Time) */}
+          <div className="p-3 bg-blue-50/50 rounded-xl border border-blue-100 flex items-center justify-between text-xs">
+            <div className="flex items-center gap-2 text-slate-600">
+              <UserCheck className="w-4 h-4 text-blue-600 shrink-0" />
+              <span>
+                แก้ไขล่าสุด:{' '}
+                <strong className="text-slate-800">{pin.updatedBy || 'ระบบส่วนกลาง'}</strong>
+              </span>
+            </div>
+            <span className="text-[11px] text-slate-500 font-mono">
+              {new Date(pin.updatedAt).toLocaleTimeString('th-TH', {
+                hour: '2-digit',
+                minute: '2-digit',
+              })}{' '}
+              น.
+            </span>
           </div>
 
           {/* Details Card */}
@@ -224,14 +257,18 @@ export const EquipmentDetailDrawer: React.FC<EquipmentDetailDrawerProps> = ({
 
         {/* Footer Actions (Min-h 44px) */}
         <div className="p-4 border-t border-slate-200 bg-slate-50 flex items-center justify-between gap-3 shrink-0">
-          <button
-            onClick={() => onDeleteRequest(pin)}
-            className="min-h-[44px] flex items-center gap-1.5 px-4 rounded-xl text-rose-600 hover:bg-rose-50 text-xs font-semibold transition cursor-pointer"
-            aria-label="ลบจุดติดตั้งนี้"
-          >
-            <Trash2 className="w-4 h-4" />
-            <span>ลบจุดติดตั้งนี้</span>
-          </button>
+          {hasDeletePermission ? (
+            <button
+              onClick={() => onDeleteRequest(pin)}
+              className="min-h-[44px] flex items-center gap-1.5 px-4 rounded-xl text-rose-600 hover:bg-rose-50 text-xs font-semibold transition cursor-pointer"
+              aria-label="ลบจุดติดตั้งนี้"
+            >
+              <Trash2 className="w-4 h-4" />
+              <span>ลบจุดติดตั้งนี้</span>
+            </button>
+          ) : (
+            <div />
+          )}
 
           <button
             onClick={onClose}
