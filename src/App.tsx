@@ -1,14 +1,19 @@
 import React, { useState, useEffect, useRef } from 'react';
 import type { FloorPlan, EquipmentPin, EquipmentType, EquipmentPhoto } from './types';
 import {
+  getAllFloorPlansFromDB,
   saveFloorPlanToDB,
-  getFloorPlanFromDB,
+  updateFloorPlanNameInDB,
   deleteFloorPlanFromDB,
+  clearAllFloorPlansFromDB,
+  saveAllFloorPlansToDB,
   getAllEquipmentFromDB,
   saveEquipmentToDB,
   deleteEquipmentFromDB,
   clearAllEquipmentFromDB,
   saveAllEquipmentToDB,
+  getActiveMapIdFromDB,
+  saveActiveMapIdToDB,
 } from './services/db';
 import { exportProjectToJSON, validateImportJSON } from './services/importExport';
 import { useMapTransform } from './hooks/useMapTransform';
@@ -18,6 +23,7 @@ import { Sidebar } from './components/sidebar/Sidebar';
 import { MapCanvas } from './components/map/MapCanvas';
 import { MapToolbar } from './components/map/MapToolbar';
 import { MapUploadModal } from './components/map/MapUploadModal';
+import { MapEditModal } from './components/map/MapEditModal';
 import { EquipmentFormModal } from './components/equipment/EquipmentFormModal';
 import { EquipmentDetailDrawer } from './components/equipment/EquipmentDetailDrawer';
 import { ConfirmModal } from './components/common/ConfirmModal';
@@ -27,18 +33,22 @@ import { ErrorBoundary } from './components/common/ErrorBoundary';
 import { Loader2 } from 'lucide-react';
 
 export const AppContent: React.FC = () => {
-  // App primary states (IndexedDB backed)
-  const [floorPlan, setFloorPlan] = useState<FloorPlan | null>(null);
-  const [equipment, setEquipment] = useState<EquipmentPin[]>([]);
+  // 1. Data States (IndexedDB backed)
+  const [maps, setMaps] = useState<FloorPlan[]>([]);
+  const [activeMapId, setActiveMapId] = useState<string | null>(null);
+  const [allEquipment, setAllEquipment] = useState<EquipmentPin[]>([]);
   const [isLoadingDB, setIsLoadingDB] = useState(true);
 
-  // Interaction states
+  // 2. Interaction States
   const [selectedPinId, setSelectedPinId] = useState<string | null>(null);
   const [isAddMode, setIsAddMode] = useState(false);
   const [hiddenTypes, setHiddenTypes] = useState<Set<EquipmentType>>(new Set());
 
-  // Modal & Drawer states
+  // 3. Modal & Drawer States
   const [isUploadModalOpen, setIsUploadModalOpen] = useState(false);
+  const [isEditMapModalOpen, setIsEditMapModalOpen] = useState(false);
+  const [mapToEdit, setMapToEdit] = useState<FloorPlan | null>(null);
+
   const [isFormModalOpen, setIsFormModalOpen] = useState(false);
   const [formInitialData, setFormInitialData] = useState<Partial<EquipmentPin> | null>(null);
   const [pendingCoords, setPendingCoords] = useState<{ x: number; y: number } | null>(null);
@@ -51,10 +61,11 @@ export const AppContent: React.FC = () => {
 
   // Confirmation Modals
   const [pinToDelete, setPinToDelete] = useState<EquipmentPin | null>(null);
-  const [isClearAllConfirmOpen, setIsClearAllConfirmOpen] = useState(false);
-  const [isClearMapConfirmOpen, setIsClearMapConfirmOpen] = useState(false);
+  const [mapToDelete, setMapToDelete] = useState<FloorPlan | null>(null);
+  const [isClearActivePinsConfirmOpen, setIsClearActivePinsConfirmOpen] = useState(false);
+  const [isClearAllDataConfirmOpen, setIsClearAllDataConfirmOpen] = useState(false);
 
-  // Responsive UI states
+  // Responsive UI States
   const [isSidebarOpen, setIsSidebarOpen] = useState(true);
   const [isMobileSidebarOpen, setIsMobileSidebarOpen] = useState(false);
 
@@ -77,26 +88,39 @@ export const AppContent: React.FC = () => {
 
   const importFileInputRef = useRef<HTMLInputElement>(null);
 
-  // 1. Initial Load from IndexedDB
+  // Active Map & Active Equipment calculation (100% strict separation)
+  const activeMap = maps.find((m) => m.id === activeMapId) || (maps.length > 0 ? maps[0] : null);
+  const activeEquipment = activeMap ? allEquipment.filter((p) => p.mapId === activeMap.id) : [];
+  const selectedPin = activeEquipment.find((p) => p.id === selectedPinId) || null;
+
+  // Initial load from IndexedDB
   useEffect(() => {
     let isMounted = true;
     const loadInitialData = async () => {
       try {
-        const [savedMap, savedEquipment] = await Promise.all([
-          getFloorPlanFromDB(),
+        const [savedMaps, savedEquipment, lastActiveId] = await Promise.all([
+          getAllFloorPlansFromDB(),
           getAllEquipmentFromDB(),
+          getActiveMapIdFromDB(),
         ]);
 
         if (isMounted) {
-          setFloorPlan(savedMap);
-          setEquipment(savedEquipment);
+          setMaps(savedMaps);
+          setAllEquipment(savedEquipment);
+
+          if (savedMaps.length > 0) {
+            const hasValidLast = lastActiveId && savedMaps.some((m) => m.id === lastActiveId);
+            setActiveMapId(hasValidLast ? lastActiveId : savedMaps[0].id);
+          } else {
+            setActiveMapId(null);
+          }
         }
       } catch (err) {
-        console.error('Failed to load initial data from IndexedDB:', err);
+        console.error('Failed to load initial data:', err);
         addToast({
           type: 'error',
           title: 'ไม่สามารถโหลดข้อมูลจากหน่วยความจำได้',
-          message: 'กรุณาตรวจสอบการตั้งค่าพื้นที่เก็บข้อมูลของเบราว์เซอร์',
+          message: 'กรุณาตรวจสอบการตั้งค่าพื้นที่จัดเก็บของเบราว์เซอร์',
         });
       } finally {
         if (isMounted) {
@@ -111,7 +135,7 @@ export const AppContent: React.FC = () => {
     };
   }, [addToast]);
 
-  // 2. Keyboard shortcuts
+  // Keyboard shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if (
@@ -137,37 +161,122 @@ export const AppContent: React.FC = () => {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [isAddMode, zoomIn, zoomOut, addToast]);
 
-  const selectedPin = equipment.find((p) => p.id === selectedPinId) || null;
+  // Handle Switch Active Map
+  const handleSelectMap = async (mapId: string) => {
+    if (mapId === activeMapId) return;
 
-  const handleSaveFloorPlan = async (newFloorPlan: FloorPlan) => {
-    try {
-      await saveFloorPlanToDB(newFloorPlan);
-      setFloorPlan(newFloorPlan);
+    setActiveMapId(mapId);
+    setSelectedPinId(null);
+    setIsDetailOpen(false);
+    setIsAddMode(false);
+    await saveActiveMapIdToDB(mapId);
+
+    const targetMap = maps.find((m) => m.id === mapId);
+    if (targetMap) {
       addToast({
-        type: 'success',
-        title: 'บันทึกแผนที่ผังอาคารสำเร็จ',
-        message: `ไฟล์ ${newFloorPlan.name} (${newFloorPlan.width} × ${newFloorPlan.height} px)`,
-      });
-    } catch (err) {
-      console.error('Save floor plan failed:', err);
-      addToast({
-        type: 'error',
-        title: 'บันทึกแผนที่ล้มเหลว',
-        message: 'พื้นที่จัดเก็บบนอุปกรณ์อาจเต็มหรือไม่เพียงพอ',
+        type: 'info',
+        title: `สลับไปยังแผนที่ "${targetMap.name}" แล้ว`,
+        duration: 2000,
       });
     }
   };
 
+  // Handle Save New Map
+  const handleSaveFloorPlan = async (newMap: FloorPlan) => {
+    try {
+      await saveFloorPlanToDB(newMap);
+      setMaps((prev) => [...prev, newMap]);
+      setActiveMapId(newMap.id);
+      await saveActiveMapIdToDB(newMap.id);
+
+      addToast({
+        type: 'success',
+        title: 'เพิ่มแผนที่สำเร็จ',
+        message: `แผนที่ "${newMap.name}" พร้อมใช้งานแล้ว`,
+      });
+    } catch (err) {
+      console.error('Failed to save map:', err);
+      addToast({
+        type: 'error',
+        title: 'เพิ่มแผนที่ไม่สำเร็จ',
+        message: 'หน่วยความจำอาจไม่เพียงพอ',
+      });
+    }
+  };
+
+  // Handle Edit Map Name
+  const handleSaveMapName = async (mapId: string, newName: string) => {
+    try {
+      await updateFloorPlanNameInDB(mapId, newName);
+      setMaps((prev) =>
+        prev.map((m) => (m.id === mapId ? { ...m, name: newName, updatedAt: new Date().toISOString() } : m))
+      );
+      addToast({
+        type: 'success',
+        title: 'เปลี่ยนชื่อแผนที่สำเร็จ',
+        message: `เปลี่ยนเป็น "${newName}" เรียบร้อย`,
+      });
+    } catch {
+      addToast({
+        type: 'error',
+        title: 'เปลี่ยนชื่อแผนที่ล้มเหลว',
+      });
+    }
+  };
+
+  // Handle Delete Map (with confirmation)
+  const handleConfirmDeleteMap = async () => {
+    if (!mapToDelete) return;
+    const deletedId = mapToDelete.id;
+    const deletedName = mapToDelete.name;
+
+    try {
+      await deleteFloorPlanFromDB(deletedId);
+
+      const remainingMaps = maps.filter((m) => m.id !== deletedId);
+      const remainingEquipment = allEquipment.filter((p) => p.mapId !== deletedId);
+
+      setMaps(remainingMaps);
+      setAllEquipment(remainingEquipment);
+      setMapToDelete(null);
+
+      // ถ้าแผนที่ที่ลบคือแผนที่ที่กำลังเปิดดูอยู่ ให้สลับไปแผนที่แรกที่เหลือ
+      if (activeMapId === deletedId) {
+        const nextMap = remainingMaps[0] || null;
+        const nextId = nextMap ? nextMap.id : null;
+        setActiveMapId(nextId);
+        await saveActiveMapIdToDB(nextId);
+      }
+
+      addToast({
+        type: 'success',
+        title: 'ลบแผนที่สำเร็จ',
+        message: `ลบแผนที่ "${deletedName}" และหมุดที่เกี่ยวข้องเรียบร้อยแล้ว`,
+      });
+    } catch (err) {
+      console.error('Failed to delete map:', err);
+      addToast({
+        type: 'error',
+        title: 'ไม่สามารถลบแผนที่ได้',
+      });
+    }
+  };
+
+  // Handle Click on Map to Add Pin
   const handleMapClickToAdd = (coords: { x: number; y: number }) => {
+    if (!activeMap) return;
     setPendingCoords(coords);
     setFormInitialData(null);
     setIsFormModalOpen(true);
     setIsAddMode(false);
   };
 
+  // Handle Save / Update Equipment Pin
   const handleSaveEquipment = async (
     data: Omit<EquipmentPin, 'id' | 'createdAt' | 'updatedAt'> & { id?: string }
   ) => {
+    if (!activeMap) return;
+
     const now = new Date().toISOString();
     const isNew = !data.id;
     const pinId = data.id || `eq-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
@@ -175,14 +284,15 @@ export const AppContent: React.FC = () => {
     const savedPin: EquipmentPin = {
       ...data,
       id: pinId,
-      createdAt: data.id ? equipment.find((p) => p.id === data.id)?.createdAt || now : now,
+      mapId: data.mapId || activeMap.id,
+      createdAt: data.id ? allEquipment.find((p) => p.id === data.id)?.createdAt || now : now,
       updatedAt: now,
     };
 
     try {
       await saveEquipmentToDB(savedPin);
 
-      setEquipment((prev) => {
+      setAllEquipment((prev) => {
         if (isNew) {
           return [...prev, savedPin];
         }
@@ -195,20 +305,20 @@ export const AppContent: React.FC = () => {
       addToast({
         type: 'success',
         title: isNew ? 'เพิ่มจุดติดตั้งสำเร็จ' : 'แก้ไขข้อมูลอุปกรณ์สำเร็จ',
-        message: `${savedPin.name} (${savedPin.code})`,
+        message: `${savedPin.name} (${savedPin.code}) บน ${activeMap.name}`,
       });
     } catch (err) {
       console.error('Failed to save equipment:', err);
       addToast({
         type: 'error',
         title: 'เกิดข้อผิดพลาดในการบันทึกข้อมูล',
-        message: 'กรุณาลองใหม่อีกครั้ง',
       });
     }
   };
 
+  // Handle Move Pin Coordinates
   const handleMovePin = async (pinId: string, newX: number, newY: number) => {
-    const pin = equipment.find((p) => p.id === pinId);
+    const pin = allEquipment.find((p) => p.id === pinId);
     if (!pin) return;
 
     const updatedPin: EquipmentPin = {
@@ -220,7 +330,7 @@ export const AppContent: React.FC = () => {
 
     try {
       await saveEquipmentToDB(updatedPin);
-      setEquipment((prev) => prev.map((item) => (item.id === pinId ? updatedPin : item)));
+      setAllEquipment((prev) => prev.map((item) => (item.id === pinId ? updatedPin : item)));
       addToast({
         type: 'info',
         title: 'ย้ายตำแหน่งจุดติดตั้งแล้ว',
@@ -232,6 +342,7 @@ export const AppContent: React.FC = () => {
     }
   };
 
+  // Handle Delete Equipment Pin
   const handleConfirmDeletePin = async () => {
     if (!pinToDelete) return;
     const id = pinToDelete.id;
@@ -239,7 +350,7 @@ export const AppContent: React.FC = () => {
 
     try {
       await deleteEquipmentFromDB(id);
-      setEquipment((prev) => prev.filter((p) => p.id !== id));
+      setAllEquipment((prev) => prev.filter((p) => p.id !== id));
       if (selectedPinId === id) {
         setSelectedPinId(null);
         setIsDetailOpen(false);
@@ -260,16 +371,49 @@ export const AppContent: React.FC = () => {
     }
   };
 
-  const handleConfirmClearAll = async () => {
+  // Clear Active Map Equipment Pins
+  const handleConfirmClearActiveEquipment = async () => {
+    if (!activeMap) return;
     try {
-      await clearAllEquipmentFromDB();
-      setEquipment([]);
+      const activeIds = new Set(activeEquipment.map((p) => p.id));
+      for (const id of activeIds) {
+        await deleteEquipmentFromDB(id);
+      }
+
+      setAllEquipment((prev) => prev.filter((p) => p.mapId !== activeMap.id));
       setSelectedPinId(null);
       setIsDetailOpen(false);
-      setIsClearAllConfirmOpen(false);
+      setIsClearActivePinsConfirmOpen(false);
+
       addToast({
         type: 'info',
-        title: 'ล้างข้อมูลอุปกรณ์ทั้งหมดเรียบร้อยแล้ว',
+        title: `ลบจุดติดตั้งบน "${activeMap.name}" ทั้งหมดแล้ว`,
+      });
+    } catch {
+      addToast({
+        type: 'error',
+        title: 'เกิดข้อผิดพลาดในการลบข้อมูล',
+      });
+    }
+  };
+
+  // Clear All Data
+  const handleConfirmClearAllData = async () => {
+    try {
+      await clearAllFloorPlansFromDB();
+      await clearAllEquipmentFromDB();
+      await saveActiveMapIdToDB(null);
+
+      setMaps([]);
+      setAllEquipment([]);
+      setActiveMapId(null);
+      setSelectedPinId(null);
+      setIsDetailOpen(false);
+      setIsClearAllDataConfirmOpen(false);
+
+      addToast({
+        type: 'info',
+        title: 'ล้างข้อมูลทั้งหมดในระบบเรียบร้อยแล้ว',
       });
     } catch {
       addToast({
@@ -279,37 +423,15 @@ export const AppContent: React.FC = () => {
     }
   };
 
-  const handleConfirmClearMap = async () => {
-    try {
-      await deleteFloorPlanFromDB();
-      setFloorPlan(null);
-      setIsClearMapConfirmOpen(false);
-      addToast({
-        type: 'info',
-        title: 'ลบแผนที่ปัจจุบันออกแล้ว',
-      });
-    } catch {
-      addToast({
-        type: 'error',
-        title: 'เกิดข้อผิดพลาดในการลบแผนที่',
-      });
-    }
-  };
-
-  const handleSelectPin = (pin: EquipmentPin) => {
-    setSelectedPinId(pin.id);
-    setIsDetailOpen(true);
-    if (isMobileSidebarOpen) setIsMobileSidebarOpen(false);
-  };
-
+  // Focus Pin
   const handleFocusPin = (pin: EquipmentPin) => {
-    if (!floorPlan) return;
+    if (!activeMap) return;
     const container = document.querySelector('.cursor-grab, .cursor-crosshair') as HTMLElement;
     if (container) {
       const { clientWidth, clientHeight } = container;
       const targetScale = Math.max(1.2, transform.scale);
-      const targetPinX = pin.x * floorPlan.width * targetScale;
-      const targetPinY = pin.y * floorPlan.height * targetScale;
+      const targetPinX = pin.x * activeMap.width * targetScale;
+      const targetPinY = pin.y * activeMap.height * targetScale;
 
       const translateX = clientWidth / 2 - targetPinX;
       const translateY = clientHeight / 2 - targetPinY;
@@ -320,6 +442,7 @@ export const AppContent: React.FC = () => {
     }
   };
 
+  // Visibility toggle
   const handleToggleTypeVisibility = (type: EquipmentType) => {
     setHiddenTypes((prev) => {
       const next = new Set(prev);
@@ -332,13 +455,14 @@ export const AppContent: React.FC = () => {
     });
   };
 
+  // JSON Export (All maps and all pins)
   const handleExportJSON = () => {
     try {
-      exportProjectToJSON(floorPlan, equipment);
+      exportProjectToJSON(maps, allEquipment, activeMapId);
       addToast({
         type: 'success',
         title: 'ส่งออกข้อมูลสำเร็จ',
-        message: `แผนที่และอุปกรณ์จำนวน ${equipment.length} รายการ`,
+        message: `${maps.length} แผนที่ และจุดติดตั้ง ${allEquipment.length} รายการ`,
       });
     } catch (err) {
       console.error('Export failed:', err);
@@ -349,6 +473,7 @@ export const AppContent: React.FC = () => {
     }
   };
 
+  // JSON Import
   const handleImportFile = async (file: File) => {
     try {
       const text = await file.text();
@@ -366,14 +491,23 @@ export const AppContent: React.FC = () => {
 
       const importedData = result.data;
 
-      if (importedData.floorPlan) {
-        await saveFloorPlanToDB(importedData.floorPlan);
-        setFloorPlan(importedData.floorPlan);
-      }
+      // บันทึกลง IndexedDB
+      await clearAllFloorPlansFromDB();
+      await saveAllFloorPlansToDB(importedData.maps);
 
       await clearAllEquipmentFromDB();
       await saveAllEquipmentToDB(importedData.equipment);
-      setEquipment(importedData.equipment);
+
+      setMaps(importedData.maps);
+      setAllEquipment(importedData.equipment);
+
+      const targetActiveId =
+        importedData.activeMapId && importedData.maps.some((m) => m.id === importedData.activeMapId)
+          ? importedData.activeMapId
+          : importedData.maps[0]?.id || null;
+
+      setActiveMapId(targetActiveId);
+      await saveActiveMapIdToDB(targetActiveId);
 
       setSelectedPinId(null);
       setIsDetailOpen(false);
@@ -381,14 +515,14 @@ export const AppContent: React.FC = () => {
       addToast({
         type: 'success',
         title: 'นำเข้าข้อมูลสำเร็จ',
-        message: `โหลดแผนที่และอุปกรณ์จำนวน ${importedData.equipment.length} รายการแล้ว`,
+        message: `โหลด ${importedData.maps.length} แผนที่ และ ${importedData.equipment.length} จุดติดตั้งแล้ว`,
       });
     } catch (err) {
       console.error('Import failed:', err);
       addToast({
         type: 'error',
         title: 'ไม่สามารถนำเข้าข้อมูลได้',
-        message: err instanceof Error ? err.message : 'ไฟล์ JSON มีความเสียหายหรือรูปแบบผิดพลาด',
+        message: err instanceof Error ? err.message : 'ไฟล์ JSON มีความเสียหาย',
       });
     }
   };
@@ -401,21 +535,24 @@ export const AppContent: React.FC = () => {
 
   if (isLoadingDB) {
     return (
-      <div className="min-h-screen w-full flex flex-col items-center justify-center bg-slate-950 text-white">
-        <Loader2 className="w-10 h-10 text-indigo-500 animate-spin mb-4" />
-        <p className="text-sm font-medium text-slate-300">กำลังโหลดระบบจัดการแผนที่อุปกรณ์...</p>
+      <div className="min-h-screen w-full flex flex-col items-center justify-center bg-slate-50 text-slate-800">
+        <Loader2 className="w-10 h-10 text-blue-600 animate-spin mb-4" />
+        <p className="text-sm font-semibold text-slate-700">กำลังโหลดระบบจัดการแผนที่อุปกรณ์...</p>
       </div>
     );
   }
 
   return (
-    <div className="flex flex-col h-screen w-screen overflow-hidden bg-slate-950 text-slate-100">
+    <div className="flex flex-col h-screen w-screen overflow-hidden bg-slate-50 text-slate-800 font-sans">
+      {/* Top Header */}
       <Header
-        floorPlan={floorPlan}
-        equipment={equipment}
+        maps={maps}
+        activeMap={activeMap}
+        equipment={activeEquipment}
         isAddMode={isAddMode}
+        onSelectMap={handleSelectMap}
         onToggleAddMode={() => {
-          if (!floorPlan) {
+          if (!activeMap) {
             setIsUploadModalOpen(true);
             return;
           }
@@ -427,6 +564,7 @@ export const AppContent: React.FC = () => {
         onImportClick={() => importFileInputRef.current?.click()}
       />
 
+      {/* Hidden File Input for JSON Import */}
       <input
         ref={importFileInputRef}
         type="file"
@@ -441,33 +579,55 @@ export const AppContent: React.FC = () => {
         }}
       />
 
+      {/* Main Workspace Area (Sidebar + Map Canvas) */}
       <div className="flex flex-1 relative overflow-hidden">
+        {/* Left Sidebar */}
         <Sidebar
-          floorPlan={floorPlan}
-          equipment={equipment}
+          maps={maps}
+          activeMapId={activeMapId}
+          equipment={activeEquipment}
+          allEquipment={allEquipment}
           selectedPinId={selectedPinId}
           hiddenTypes={hiddenTypes}
           isOpen={isSidebarOpen}
           isMobileOpen={isMobileSidebarOpen}
           onToggleOpen={() => setIsSidebarOpen((prev) => !prev)}
           onCloseMobile={() => setIsMobileSidebarOpen(false)}
-          onSelectEquipment={handleSelectPin}
+          onSelectMap={handleSelectMap}
+          onOpenAddMapModal={() => setIsUploadModalOpen(true)}
+          onEditMapName={(map) => {
+            setMapToEdit(map);
+            setIsEditMapModalOpen(true);
+          }}
+          onRequestDeleteMap={(map) => setMapToDelete(map)}
+          onSelectEquipment={(pin) => {
+            setSelectedPinId(pin.id);
+            setIsDetailOpen(true);
+            if (isMobileSidebarOpen) setIsMobileSidebarOpen(false);
+          }}
           onToggleTypeVisibility={handleToggleTypeVisibility}
           onExportJSON={handleExportJSON}
           onImportFile={handleImportFile}
-          onRequestClearAllEquipment={() => setIsClearAllConfirmOpen(true)}
-          onRequestClearMap={() => setIsClearMapConfirmOpen(true)}
+          onRequestClearActiveEquipment={() => setIsClearActivePinsConfirmOpen(true)}
+          onRequestClearAllData={() => setIsClearAllDataConfirmOpen(true)}
+          onRequestClearMap={() => {
+            if (activeMap) setMapToDelete(activeMap);
+          }}
         />
 
-        <main className="flex-1 relative h-full w-full overflow-hidden">
+        {/* Center: Map Canvas Viewport */}
+        <main className="flex-1 relative h-full w-full overflow-hidden bg-slate-100">
           <MapCanvas
-            floorPlan={floorPlan}
-            equipment={equipment}
+            floorPlan={activeMap}
+            equipment={activeEquipment}
             hiddenTypes={hiddenTypes}
             selectedPinId={selectedPinId}
             isAddMode={isAddMode}
             transform={transform}
-            onSelectPin={handleSelectPin}
+            onSelectPin={(pin) => {
+              setSelectedPinId(pin.id);
+              setIsDetailOpen(true);
+            }}
             onMovePin={handleMovePin}
             onMapClickToAdd={handleMapClickToAdd}
             onWheelZoom={zoomAtPoint}
@@ -481,37 +641,38 @@ export const AppContent: React.FC = () => {
             onFitToScreen={fitToScreen}
           />
 
-          <div className="absolute bottom-5 left-1/2 -translate-x-1/2 z-30">
+          {/* Floating Map Toolbar */}
+          <div className="absolute bottom-6 left-1/2 -translate-x-1/2 z-30 pointer-events-none">
             <MapToolbar
               scale={transform.scale}
               isAddMode={isAddMode}
-              hasFloorPlan={Boolean(floorPlan)}
+              hasFloorPlan={Boolean(activeMap)}
               onZoomIn={zoomIn}
               onZoomOut={zoomOut}
               onFitToScreen={() => {
                 const container = document.querySelector('.cursor-grab, .cursor-crosshair') as HTMLElement;
-                if (container && floorPlan) {
+                if (container && activeMap) {
                   fitToScreen(
                     container.clientWidth,
                     container.clientHeight,
-                    floorPlan.width,
-                    floorPlan.height
+                    activeMap.width,
+                    activeMap.height
                   );
                 }
               }}
               onResetView={() => {
                 const container = document.querySelector('.cursor-grab, .cursor-crosshair') as HTMLElement;
-                if (container && floorPlan) {
+                if (container && activeMap) {
                   resetView(
                     container.clientWidth,
                     container.clientHeight,
-                    floorPlan.width,
-                    floorPlan.height
+                    activeMap.width,
+                    activeMap.height
                   );
                 }
               }}
               onToggleAddMode={() => {
-                if (!floorPlan) {
+                if (!activeMap) {
                   setIsUploadModalOpen(true);
                   return;
                 }
@@ -521,8 +682,10 @@ export const AppContent: React.FC = () => {
             />
           </div>
 
+          {/* Equipment Detail: Bottom Sheet on Mobile, Side Panel on Desktop */}
           <EquipmentDetailDrawer
             pin={selectedPin}
+            mapName={activeMap?.name}
             isOpen={isDetailOpen && Boolean(selectedPin)}
             onClose={() => {
               setIsDetailOpen(false);
@@ -540,15 +703,30 @@ export const AppContent: React.FC = () => {
         </main>
       </div>
 
+      {/* Upload/Add New Map Modal */}
       <MapUploadModal
         isOpen={isUploadModalOpen}
-        hasExistingMap={Boolean(floorPlan)}
+        mapCount={maps.length}
         onClose={() => setIsUploadModalOpen(false)}
         onSaveFloorPlan={handleSaveFloorPlan}
       />
 
+      {/* Edit Map Name Modal */}
+      <MapEditModal
+        map={mapToEdit}
+        isOpen={isEditMapModalOpen}
+        onClose={() => {
+          setIsEditMapModalOpen(false);
+          setMapToEdit(null);
+        }}
+        onSaveName={handleSaveMapName}
+      />
+
+      {/* Equipment Add/Edit Form Modal */}
       <EquipmentFormModal
         isOpen={isFormModalOpen}
+        mapId={activeMap?.id || ''}
+        mapName={activeMap?.name || ''}
         initialData={formInitialData}
         defaultCoordinates={pendingCoords}
         onClose={() => {
@@ -560,6 +738,7 @@ export const AppContent: React.FC = () => {
         onViewPhoto={handleOpenLightbox}
       />
 
+      {/* Photo Lightbox */}
       <Lightbox
         photos={lightboxPhotos}
         currentIndex={lightboxIndex}
@@ -568,6 +747,7 @@ export const AppContent: React.FC = () => {
         onNavigate={(idx) => setLightboxIndex(idx)}
       />
 
+      {/* Confirm Delete Single Pin Modal */}
       <ConfirmModal
         isOpen={Boolean(pinToDelete)}
         title="ยืนยันการลบจุดติดตั้ง"
@@ -579,28 +759,43 @@ export const AppContent: React.FC = () => {
         onCancel={() => setPinToDelete(null)}
       />
 
+      {/* Confirm Delete Map Modal */}
       <ConfirmModal
-        isOpen={isClearAllConfirmOpen}
-        title="ยืนยันการล้างข้อมูลอุปกรณ์ทั้งหมด"
-        message={`คุณต้องการลบจุดติดตั้งทั้งหมดจำนวน ${equipment.length} รายการใช่หรือไม่? ข้อมูลทั้งหมดจะถูกลบออกจากหน่วยความจำ`}
+        isOpen={Boolean(mapToDelete)}
+        title="ยืนยันการลบแผนที่ผังอาคาร"
+        message={`คุณแน่ใจหรือไม่ว่าต้องการลบแผนที่ "${mapToDelete?.name}"? หมุดและข้อมูลอุปกรณ์ทั้งหมดบนแผนที่นี้จะถูกลบออกด้วย`}
+        confirmLabel="ลบแผนที่นี้"
+        cancelLabel="ยกเลิก"
+        isDanger={true}
+        onConfirm={handleConfirmDeleteMap}
+        onCancel={() => setMapToDelete(null)}
+      />
+
+      {/* Confirm Clear Active Map Pins Modal */}
+      <ConfirmModal
+        isOpen={isClearActivePinsConfirmOpen}
+        title="ยืนยันการลบหมุดบนแผนที่นี้"
+        message={`คุณต้องการลบจุดติดตั้งทั้งหมดจำนวน ${activeEquipment.length} จุดบนแผนที่ "${activeMap?.name}" ใช่หรือไม่?`}
+        confirmLabel="ลบหมุดทั้งหมด"
+        cancelLabel="ยกเลิก"
+        isDanger={true}
+        onConfirm={handleConfirmClearActiveEquipment}
+        onCancel={() => setIsClearActivePinsConfirmOpen(false)}
+      />
+
+      {/* Confirm Clear All Data Modal */}
+      <ConfirmModal
+        isOpen={isClearAllDataConfirmOpen}
+        title="ยืนยันการล้างข้อมูลทั้งหมดในระบบ"
+        message={`คุณต้องการลบแผนที่ทั้งหมด (${maps.length} แผนที่) และหมุดทั้งหมด (${allEquipment.length} จุด) ออกจากระบบใช่หรือไม่?`}
         confirmLabel="ล้างข้อมูลทั้งหมด"
         cancelLabel="ยกเลิก"
         isDanger={true}
-        onConfirm={handleConfirmClearAll}
-        onCancel={() => setIsClearAllConfirmOpen(false)}
+        onConfirm={handleConfirmClearAllData}
+        onCancel={() => setIsClearAllDataConfirmOpen(false)}
       />
 
-      <ConfirmModal
-        isOpen={isClearMapConfirmOpen}
-        title="ยืนยันการลบแผนที่ผังอาคาร"
-        message="คุณต้องการลบภาพแผนที่ปัจจุบันออกใช่หรือไม่? จุดติดตั้งเดิมจะยังคงอยู่และจะแสดงเมื่อคุณอัปโหลดแผนที่ใหม่"
-        confirmLabel="ลบแผนที่"
-        cancelLabel="ยกเลิก"
-        isDanger={true}
-        onConfirm={handleConfirmClearMap}
-        onCancel={() => setIsClearMapConfirmOpen(false)}
-      />
-
+      {/* Global Toast Container */}
       <ToastContainer toasts={toasts} onRemove={removeToast} />
     </div>
   );

@@ -24,7 +24,7 @@ export interface ImportValidationResult {
 }
 
 /**
- * ตรวจสอบความถูกต้องของข้อมูล JSON ก่อนนำเข้า
+ * ตรวจสอบความถูกต้องของข้อมูล JSON ก่อนนำเข้า (รองรับทั้ง v1.0 และ v2.0)
  */
 export function validateImportJSON(raw: unknown): ImportValidationResult {
   if (typeof raw !== 'object' || raw === null) {
@@ -37,29 +37,50 @@ export function validateImportJSON(raw: unknown): ImportValidationResult {
     return { valid: false, error: 'ไฟล์นี้ไม่ใช่ข้อมูลของระบบจัดการแผนที่อุปกรณ์อาคาร (indoor-map-manager)' };
   }
 
-  // ตรวจสอบ floorPlan
-  let floorPlan: FloorPlan | null = null;
-  if (obj.floorPlan) {
-    const fp = obj.floorPlan as Record<string, unknown>;
-    if (typeof fp.dataUrl !== 'string' || typeof fp.name !== 'string') {
-      return { valid: false, error: 'ข้อมูลแผนที่ในไฟล์ไม่สมบูรณ์ (ขาด dataUrl หรือ name)' };
+  // 1. ตรวจสอบรายการแผนที่ (maps หรือ legacy floorPlan)
+  const maps: FloorPlan[] = [];
+
+  // กรณี v2.0 มี array ของ maps
+  if (Array.isArray(obj.maps)) {
+    for (let i = 0; i < obj.maps.length; i++) {
+      const fp = obj.maps[i] as Record<string, unknown>;
+      if (fp && typeof fp.dataUrl === 'string' && typeof fp.name === 'string') {
+        maps.push({
+          id: typeof fp.id === 'string' && fp.id ? fp.id : `fp-${Date.now()}-${i}`,
+          name: fp.name,
+          dataUrl: fp.dataUrl,
+          mimeType: typeof fp.mimeType === 'string' ? fp.mimeType : 'image/png',
+          width: typeof fp.width === 'number' ? fp.width : 1000,
+          height: typeof fp.height === 'number' ? fp.height : 800,
+          fileSize: typeof fp.fileSize === 'number' ? fp.fileSize : 0,
+          uploadedAt: typeof fp.uploadedAt === 'string' ? fp.uploadedAt : new Date().toISOString(),
+        });
+      }
     }
-    floorPlan = {
-      id: typeof fp.id === 'string' ? fp.id : `fp-${Date.now()}`,
-      name: fp.name,
-      dataUrl: fp.dataUrl,
-      mimeType: typeof fp.mimeType === 'string' ? fp.mimeType : 'image/png',
-      width: typeof fp.width === 'number' ? fp.width : 1000,
-      height: typeof fp.height === 'number' ? fp.height : 800,
-      fileSize: typeof fp.fileSize === 'number' ? fp.fileSize : 0,
-      uploadedAt: typeof fp.uploadedAt === 'string' ? fp.uploadedAt : new Date().toISOString(),
-    };
+  } else if (obj.floorPlan) {
+    // รองรับ v1.0 เก่า
+    const fp = obj.floorPlan as Record<string, unknown>;
+    if (typeof fp.dataUrl === 'string' && typeof fp.name === 'string') {
+      maps.push({
+        id: typeof fp.id === 'string' && fp.id ? fp.id : `fp-${Date.now()}`,
+        name: fp.name,
+        dataUrl: fp.dataUrl,
+        mimeType: typeof fp.mimeType === 'string' ? fp.mimeType : 'image/png',
+        width: typeof fp.width === 'number' ? fp.width : 1000,
+        height: typeof fp.height === 'number' ? fp.height : 800,
+        fileSize: typeof fp.fileSize === 'number' ? fp.fileSize : 0,
+        uploadedAt: typeof fp.uploadedAt === 'string' ? fp.uploadedAt : new Date().toISOString(),
+      });
+    }
   }
 
-  // ตรวจสอบ equipment array
+  // 2. ตรวจสอบ equipment array
   if (!Array.isArray(obj.equipment)) {
     return { valid: false, error: 'ไม่พบรายการอุปกรณ์ในไฟล์ (equipment array)' };
   }
+
+  const defaultMapId = maps.length > 0 ? maps[0].id : '';
+  const validMapIds = new Set(maps.map((m) => m.id));
 
   const equipment: EquipmentPin[] = [];
   for (let i = 0; i < obj.equipment.length; i++) {
@@ -87,8 +108,15 @@ export function validateImportJSON(raw: unknown): ImportValidationResult {
       ? item.photos.filter((p) => p && typeof p.dataUrl === 'string')
       : [];
 
+    // กำหนด mapId ให้ถูกต้อง
+    let mapId = typeof item.mapId === 'string' && item.mapId ? item.mapId : defaultMapId;
+    if (maps.length > 0 && !validMapIds.has(mapId)) {
+      mapId = defaultMapId;
+    }
+
     equipment.push({
       id: typeof item.id === 'string' && item.id ? item.id : `pin-${Date.now()}-${i}`,
+      mapId,
       name: item.name,
       type,
       code: typeof item.code === 'string' ? item.code : `CODE-${i + 1}`,
@@ -105,31 +133,39 @@ export function validateImportJSON(raw: unknown): ImportValidationResult {
     });
   }
 
+  const activeMapId =
+    typeof obj.activeMapId === 'string' && validMapIds.has(obj.activeMapId)
+      ? obj.activeMapId
+      : maps[0]?.id;
+
   return {
     valid: true,
     data: {
-      version: '1.0',
+      version: '2.0',
       exportedAt: typeof obj.exportedAt === 'string' ? obj.exportedAt : new Date().toISOString(),
       appName: 'indoor-map-manager',
-      floorPlan,
+      activeMapId,
+      maps,
       equipment,
     },
   };
 }
 
 /**
- * ส่งออกข้อมูลโครงการเป็นไฟล์ JSON และดาวน์โหลดลงเครื่อง
+ * ส่งออกข้อมูลโครงการทั้งหมดเป็นไฟล์ JSON
  */
 export function exportProjectToJSON(
-  floorPlan: FloorPlan | null,
+  maps: FloorPlan[],
   equipment: EquipmentPin[],
+  activeMapId?: string | null,
   filenamePrefix = 'indoor-equipment-backup'
 ): void {
   const exportData: FloorPlanProjectExport = {
-    version: '1.0',
+    version: '2.0',
     exportedAt: new Date().toISOString(),
     appName: 'indoor-map-manager',
-    floorPlan,
+    activeMapId: activeMapId || undefined,
+    maps,
     equipment,
   };
 

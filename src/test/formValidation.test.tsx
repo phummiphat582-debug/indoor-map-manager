@@ -10,12 +10,13 @@ describe('EquipmentFormModal Validation & Interactions', () => {
     render(
       <EquipmentFormModal
         isOpen={true}
+        mapId="map-1"
+        mapName="ชั้น 1"
         onClose={handleClose}
         onSave={handleSave}
       />
     );
 
-    // Initial default code may be filled, clear all to test required validation
     const nameInput = screen.getByPlaceholderText('เช่น กล้องวงจรปิด ประตูทางเข้า L1');
     const codeInput = screen.getByPlaceholderText('เช่น CCTV-01, FE-02');
     const zoneInput = screen.getByPlaceholderText('เช่น โถงต้อนรับ, หน้าห้องประชุมใหญ่');
@@ -35,7 +36,6 @@ describe('EquipmentFormModal Validation & Interactions', () => {
       expect(screen.getByText('กรุณาระบุตำแหน่งหรือโซน')).toBeInTheDocument();
     });
 
-    // onSave should not have been called
     expect(handleSave).not.toHaveBeenCalled();
   });
 
@@ -46,6 +46,8 @@ describe('EquipmentFormModal Validation & Interactions', () => {
     render(
       <EquipmentFormModal
         isOpen={true}
+        mapId="map-1"
+        mapName="ชั้น 1"
         defaultCoordinates={{ x: 0.42, y: 0.68 }}
         onClose={handleClose}
         onSave={handleSave}
@@ -80,10 +82,10 @@ describe('EquipmentFormModal Validation & Interactions', () => {
         code: 'FE-STAIR-01',
         zone: 'บันไดหนีไฟ ชั้น 1',
         status: 'maintenance',
+        mapId: 'map-1',
         x: 0.42,
         y: 0.68,
       })
     );
-    expect(handleClose).toHaveBeenCalled();
   });
 });

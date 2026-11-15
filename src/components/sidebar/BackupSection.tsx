@@ -1,22 +1,28 @@
 import React, { useRef } from 'react';
 import { Download, Upload, Trash2, Database, AlertCircle } from 'lucide-react';
-import type { FloorPlan, EquipmentPin } from '../../types';
+import type { FloorPlan } from '../../types';
 
 interface BackupSectionProps {
-  floorPlan: FloorPlan | null;
-  equipment: EquipmentPin[];
+  maps: FloorPlan[];
+  activeMap: FloorPlan | null;
+  totalEquipmentCount: number;
+  activeEquipmentCount: number;
   onExport: () => void;
   onImportFile: (file: File) => void;
-  onRequestClearAllEquipment: () => void;
+  onRequestClearActiveEquipment: () => void;
+  onRequestClearAllData: () => void;
   onRequestClearMap: () => void;
 }
 
 export const BackupSection: React.FC<BackupSectionProps> = ({
-  floorPlan,
-  equipment,
+  maps,
+  activeMap,
+  totalEquipmentCount,
+  activeEquipmentCount,
   onExport,
   onImportFile,
-  onRequestClearAllEquipment,
+  onRequestClearActiveEquipment,
+  onRequestClearAllData,
   onRequestClearMap,
 }) => {
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -31,25 +37,29 @@ export const BackupSection: React.FC<BackupSectionProps> = ({
 
   return (
     <div className="space-y-6">
-      <div className="bg-slate-50 dark:bg-slate-800/40 p-4 rounded-2xl border border-slate-200 dark:border-slate-800 space-y-3">
-        <div className="flex items-center gap-2 text-xs font-bold text-slate-800 dark:text-slate-200">
-          <Database className="w-4 h-4 text-indigo-500" />
+      {/* Export / Import Box */}
+      <div className="bg-slate-50 p-4 rounded-2xl border border-slate-200 space-y-3">
+        <div className="flex items-center gap-2 text-xs font-bold text-slate-800">
+          <Database className="w-4 h-4 text-blue-600" />
           <span>การสำรองและถ่ายโอนข้อมูล (JSON)</span>
         </div>
-        <p className="text-xs text-slate-500 dark:text-slate-400 leading-relaxed">
-          ส่งออกข้อมูลแผนที่ รูปภาพ และจุดติดตั้งทั้งหมดเป็นไฟล์ JSON เพื่อสำรองข้อมูล
-          หรือนำเข้าข้อมูลในเครื่องอื่น
+        <p className="text-xs text-slate-500 leading-relaxed">
+          ส่งออกข้อมูลแผนที่ทั้งหมด ({maps.length} แผนที่) และจุดติดตั้งทั้งหมด ({totalEquipmentCount} จุด)
+          เพื่อสำรองข้อมูลหรือถ่ายโอนไปยังเครื่องอื่น
         </p>
 
+        {/* Export Button (Min-h 44px) */}
         <button
           onClick={onExport}
-          disabled={!floorPlan && equipment.length === 0}
-          className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-indigo-600 hover:bg-indigo-700 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-semibold transition shadow-sm shadow-indigo-600/20 cursor-pointer"
+          disabled={maps.length === 0}
+          className="w-full min-h-[44px] flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl bg-blue-600 hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed text-white text-xs font-semibold transition shadow-xs shadow-blue-600/20 cursor-pointer"
+          aria-label="ส่งออกข้อมูลเป็นไฟล์ JSON (Export)"
         >
           <Download className="w-4 h-4" />
-          <span>ส่งออกข้อมูลเป็นไฟล์ JSON (Export)</span>
+          <span>ส่งออกข้อมูลทั้งหมดเป็น JSON (Export)</span>
         </button>
 
+        {/* Import Button (Min-h 44px) */}
         <input
           ref={fileInputRef}
           type="file"
@@ -59,47 +69,63 @@ export const BackupSection: React.FC<BackupSectionProps> = ({
         />
         <button
           onClick={() => fileInputRef.current?.click()}
-          className="w-full flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl border border-slate-300 dark:border-slate-700 hover:bg-slate-100 dark:hover:bg-slate-800 text-slate-700 dark:text-slate-300 text-xs font-semibold transition cursor-pointer"
+          className="w-full min-h-[44px] flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl border border-slate-300 hover:bg-slate-100 text-slate-700 text-xs font-semibold transition cursor-pointer"
+          aria-label="นำเข้าข้อมูลจากไฟล์ JSON (Import)"
         >
-          <Upload className="w-4 h-4 text-indigo-500" />
+          <Upload className="w-4 h-4 text-blue-600" />
           <span>นำเข้าข้อมูลจากไฟล์ JSON (Import)</span>
         </button>
       </div>
 
-      <div className="p-4 rounded-2xl bg-indigo-50/50 dark:bg-indigo-950/20 border border-indigo-100 dark:border-indigo-900/30 text-xs text-indigo-900 dark:text-indigo-300 space-y-1.5">
+      {/* Storage Information */}
+      <div className="p-4 rounded-2xl bg-blue-50/60 border border-blue-200/60 text-xs text-blue-900 space-y-1.5">
         <p className="font-semibold flex items-center gap-1.5">
-          <Database className="w-3.5 h-3.5 text-indigo-500" />
-          <span>การจัดเก็บข้อมูลอัตโนมัติ (IndexedDB)</span>
+          <Database className="w-4 h-4 text-blue-600" />
+          <span>ระบบจัดเก็บข้อมูลในตัว (IndexedDB)</span>
         </p>
-        <p className="text-[11px] text-slate-600 dark:text-slate-400 leading-relaxed">
-          ระบบจะบันทึกข้อมูลแผนที่ ตำแหน่งหมุด และรูปภาพลงใน IndexedDB ของเบราว์เซอร์อัตโนมัติ
-          เมื่อรีเฟรชหน้าจอข้อมูลจะไม่สูญหาย
+        <p className="text-[11px] text-slate-600 leading-relaxed">
+          ระบบบันทึกแผนที่ทุกแผนที่และตำแหน่งหมุดทั้งหมดลงใน IndexedDB อัตโนมัติ
+          ข้อมูลของแต่ละแผนที่แยกจากกันอย่างสมบูรณ์ และข้อมูลไม่หายเมื่อรีเฟรช
         </p>
       </div>
 
-      <div className="border border-rose-200 dark:border-rose-900/40 bg-rose-50/30 dark:bg-rose-950/10 p-4 rounded-2xl space-y-3">
-        <div className="flex items-center gap-2 text-xs font-bold text-rose-700 dark:text-rose-400">
+      {/* Danger Zone */}
+      <div className="border border-rose-200 bg-rose-50/40 p-4 rounded-2xl space-y-3">
+        <div className="flex items-center gap-2 text-xs font-bold text-rose-700">
           <AlertCircle className="w-4 h-4" />
           <span>การจัดการข้อมูลความเสี่ยงสูง</span>
         </div>
 
-        <button
-          onClick={onRequestClearAllEquipment}
-          disabled={equipment.length === 0}
-          className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-xl text-rose-600 dark:text-rose-400 hover:bg-rose-100 dark:hover:bg-rose-950/40 text-xs font-medium border border-rose-200 dark:border-rose-900/40 transition disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
-        >
-          <Trash2 className="w-3.5 h-3.5" />
-          <span>ลบจุดติดตั้งทั้งหมด ({equipment.length})</span>
-        </button>
-
-        {floorPlan && (
+        {activeMap && (
           <button
-            onClick={onRequestClearMap}
-            className="w-full flex items-center justify-center gap-2 px-3 py-2 rounded-xl text-slate-600 dark:text-slate-400 hover:bg-slate-100 dark:hover:bg-slate-800 text-xs font-medium border border-slate-200 dark:border-slate-800 transition cursor-pointer"
+            onClick={onRequestClearActiveEquipment}
+            disabled={activeEquipmentCount === 0}
+            className="w-full min-h-[44px] flex items-center justify-center gap-2 px-3 py-2 rounded-xl text-rose-600 hover:bg-rose-100 text-xs font-semibold border border-rose-200 transition disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+            aria-label={`ลบหมุดเฉพาะบน ${activeMap.name}`}
           >
-            <span>ลบแผนที่ปัจจุบันออก</span>
+            <Trash2 className="w-4 h-4" />
+            <span>ลบหมุดเฉพาะบน {activeMap.name} ({activeEquipmentCount})</span>
           </button>
         )}
+
+        {activeMap && (
+          <button
+            onClick={onRequestClearMap}
+            className="w-full min-h-[44px] flex items-center justify-center gap-2 px-3 py-2 rounded-xl text-slate-700 hover:bg-slate-200 text-xs font-medium border border-slate-300 transition cursor-pointer"
+            aria-label={`ลบแผนที่ ${activeMap.name}`}
+          >
+            <span>ลบแผนที่ปัจจุบัน ({activeMap.name})</span>
+          </button>
+        )}
+
+        <button
+          onClick={onRequestClearAllData}
+          disabled={maps.length === 0}
+          className="w-full min-h-[44px] flex items-center justify-center gap-2 px-3 py-2 rounded-xl text-rose-700 hover:bg-rose-100 text-xs font-bold border border-rose-300 transition disabled:opacity-40 disabled:cursor-not-allowed cursor-pointer"
+          aria-label="ล้างข้อมูลแผนที่และหมุดทั้งหมดในระบบ"
+        >
+          <span>ล้างข้อมูลทั้งหมดในระบบ</span>
+        </button>
       </div>
     </div>
   );

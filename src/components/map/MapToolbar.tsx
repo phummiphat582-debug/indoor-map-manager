@@ -1,5 +1,5 @@
 import React from 'react';
-import { ZoomIn, ZoomOut, Maximize2, RotateCcw, Plus, Image as ImageIcon, Crosshair } from 'lucide-react';
+import { ZoomIn, ZoomOut, Maximize2, RotateCcw, Plus, Layers, Crosshair } from 'lucide-react';
 
 interface MapToolbarProps {
   scale: number;
@@ -27,90 +27,93 @@ export const MapToolbar: React.FC<MapToolbarProps> = ({
   const zoomPercentage = Math.round(scale * 100);
 
   return (
-    <div className="flex flex-wrap items-center gap-1.5 p-1.5 bg-white/90 dark:bg-slate-900/90 backdrop-blur-md rounded-2xl shadow-xl border border-slate-200/80 dark:border-slate-800/80 select-none pointer-events-auto">
-      {/* Add Pin Button */}
+    <div className="flex flex-wrap items-center gap-1.5 p-2 bg-white/95 backdrop-blur-md rounded-2xl shadow-lg border border-slate-200/90 select-none pointer-events-auto">
+      {/* Add Pin Button (Min-h 44px, Orange Accent) */}
       <button
         onClick={onToggleAddMode}
         disabled={!hasFloorPlan}
-        title={isAddMode ? 'ยกเลิกโหมดเพิ่มจุด (Esc)' : 'เพิ่มจุดติดตั้งอุปกรณ์บนแผนที่'}
-        className={`flex items-center gap-2 px-3.5 py-2 rounded-xl text-sm font-semibold transition shadow-sm cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed ${
+        title={isAddMode ? 'ยกเลิกโหมดเพิ่มจุด (Esc)' : 'เพิ่มจุดติดตั้งอุปกรณ์บนแผนที่นี้'}
+        aria-label={isAddMode ? 'ยกเลิกโหมดเพิ่มจุด (Esc)' : 'เพิ่มจุดติดตั้งอุปกรณ์บนแผนที่นี้'}
+        className={`min-h-[44px] flex items-center gap-2 px-4 rounded-xl text-xs sm:text-sm font-semibold transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed shadow-xs ${
           isAddMode
-            ? 'bg-amber-500 hover:bg-amber-600 text-white ring-4 ring-amber-500/30 animate-pulse-subtle'
-            : 'bg-indigo-600 hover:bg-indigo-700 text-white shadow-indigo-600/20'
+            ? 'bg-amber-500 hover:bg-amber-600 text-white ring-2 ring-amber-400'
+            : 'bg-orange-600 hover:bg-orange-700 text-white shadow-orange-600/20'
         }`}
       >
         {isAddMode ? <Crosshair className="w-4 h-4 animate-spin" /> : <Plus className="w-4 h-4" />}
         <span className="hidden sm:inline">
           {isAddMode ? 'คลิกบนแผนที่เพื่อวางจุด' : 'เพิ่มจุดติดตั้ง'}
         </span>
-        <span className="sm:hidden">{isAddMode ? 'วางจุด' : 'เพิ่ม'}</span>
+        <span className="sm:hidden">{isAddMode ? 'วางจุด' : 'เพิ่มจุด'}</span>
       </button>
 
-      <div className="h-6 w-px bg-slate-200 dark:bg-slate-700 mx-0.5" />
+      <div className="h-6 w-px bg-slate-200 mx-1" />
 
-      {/* Zoom In */}
+      {/* Zoom In (Min-h 44px) */}
       <button
         onClick={onZoomIn}
         disabled={!hasFloorPlan}
-        className="p-2 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+        className="min-h-[44px] min-w-[44px] flex items-center justify-center text-slate-700 hover:text-blue-600 hover:bg-slate-100 rounded-xl transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
         title="ซูมเข้า (+)"
         aria-label="ซูมเข้า"
       >
-        <ZoomIn className="w-4 h-4" />
+        <ZoomIn className="w-5 h-5" />
       </button>
 
       {/* Zoom Indicator */}
       <span
         onClick={onResetView}
         title="คลิกเพื่อรีเซ็ตขนาด 100%"
-        className="px-2 py-1 text-xs font-mono font-medium text-slate-600 dark:text-slate-300 hover:text-indigo-600 dark:hover:text-indigo-400 cursor-pointer rounded-lg hover:bg-slate-100 dark:hover:bg-slate-800 transition"
+        aria-label={`ระดับการซูมปัจจุบัน ${zoomPercentage}% คลิกเพื่อรีเซ็ต`}
+        className="min-h-[44px] flex items-center justify-center px-2.5 text-xs font-mono font-bold text-slate-700 hover:text-blue-600 cursor-pointer rounded-xl hover:bg-slate-100 transition"
       >
         {zoomPercentage}%
       </span>
 
-      {/* Zoom Out */}
+      {/* Zoom Out (Min-h 44px) */}
       <button
         onClick={onZoomOut}
         disabled={!hasFloorPlan}
-        className="p-2 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+        className="min-h-[44px] min-w-[44px] flex items-center justify-center text-slate-700 hover:text-blue-600 hover:bg-slate-100 rounded-xl transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
         title="ซูมออก (-)"
         aria-label="ซูมออก"
       >
-        <ZoomOut className="w-4 h-4" />
+        <ZoomOut className="w-5 h-5" />
       </button>
 
-      {/* Fit to Screen */}
+      {/* Fit to Screen (Min-h 44px) */}
       <button
         onClick={onFitToScreen}
         disabled={!hasFloorPlan}
-        className="p-2 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-        title="พอดีหน้าจอ (Fit to Screen)"
+        className="min-h-[44px] min-w-[44px] flex items-center justify-center text-slate-700 hover:text-blue-600 hover:bg-slate-100 rounded-xl transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+        title="ปรับให้พอดีหน้าจอ (Fit to Screen)"
         aria-label="ปรับให้พอดีหน้าจอ"
       >
-        <Maximize2 className="w-4 h-4" />
+        <Maximize2 className="w-5 h-5" />
       </button>
 
-      {/* Reset View */}
+      {/* Reset View 1:1 (Min-h 44px) */}
       <button
         onClick={onResetView}
         disabled={!hasFloorPlan}
-        className="p-2 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed hidden sm:block"
+        className="min-h-[44px] min-w-[44px] hidden sm:flex items-center justify-center text-slate-700 hover:text-blue-600 hover:bg-slate-100 rounded-xl transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
         title="รีเซ็ตมุมมอง 100%"
-        aria-label="รีเซ็ตมุมมอง"
+        aria-label="รีเซ็ตมุมมอง 100%"
       >
-        <RotateCcw className="w-4 h-4" />
+        <RotateCcw className="w-5 h-5" />
       </button>
 
-      <div className="h-6 w-px bg-slate-200 dark:bg-slate-700 mx-0.5" />
+      <div className="h-6 w-px bg-slate-200 mx-1" />
 
-      {/* Upload / Change Map */}
+      {/* Upload/Add New Map (Min-h 44px) */}
       <button
         onClick={onOpenUploadModal}
-        className="flex items-center gap-1.5 px-3 py-2 text-slate-700 dark:text-slate-200 hover:bg-slate-100 dark:hover:bg-slate-800 rounded-xl text-sm font-medium transition cursor-pointer"
-        title="อัปโหลดหรือเปลี่ยนแผนที่ใหม่"
+        className="min-h-[44px] flex items-center gap-1.5 px-3 rounded-xl text-slate-700 hover:text-blue-600 hover:bg-slate-100 text-xs sm:text-sm font-medium transition cursor-pointer"
+        title="เพิ่มแผนที่ผังอาคารใหม่"
+        aria-label="เพิ่มแผนที่ผังอาคารใหม่"
       >
-        <ImageIcon className="w-4 h-4 text-indigo-500" />
-        <span className="hidden md:inline">{hasFloorPlan ? 'เปลี่ยนแผนที่' : 'อัปโหลดแผนที่'}</span>
+        <Layers className="w-4 h-4 text-blue-600" />
+        <span className="hidden md:inline">เพิ่มแผนที่</span>
       </button>
     </div>
   );

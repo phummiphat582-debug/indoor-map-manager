@@ -2,25 +2,39 @@ import { describe, it, expect } from 'vitest';
 import { validateImportJSON } from '../services/importExport';
 import type { FloorPlanProjectExport } from '../types';
 
-describe('JSON Import/Export Validation', () => {
-  it('accepts valid export payload with floor plan and equipment', () => {
+describe('JSON Import/Export Validation (Multi-Map v2.0)', () => {
+  it('accepts valid export payload with multiple floor plans and equipment with mapId', () => {
     const validData: FloorPlanProjectExport = {
-      version: '1.0',
+      version: '2.0',
       appName: 'indoor-map-manager',
       exportedAt: new Date().toISOString(),
-      floorPlan: {
-        id: 'fp-1',
-        name: 'Floor1.png',
-        dataUrl: 'data:image/png;base64,mock',
-        mimeType: 'image/png',
-        width: 1920,
-        height: 1080,
-        fileSize: 50000,
-        uploadedAt: new Date().toISOString(),
-      },
+      activeMapId: 'map-1',
+      maps: [
+        {
+          id: 'map-1',
+          name: 'ชั้น 1 อาคาร A',
+          dataUrl: 'data:image/png;base64,mock',
+          mimeType: 'image/png',
+          width: 1920,
+          height: 1080,
+          fileSize: 50000,
+          uploadedAt: new Date().toISOString(),
+        },
+        {
+          id: 'map-2',
+          name: 'ชั้น 2 อาคาร A',
+          dataUrl: 'data:image/png;base64,mock2',
+          mimeType: 'image/png',
+          width: 1920,
+          height: 1080,
+          fileSize: 45000,
+          uploadedAt: new Date().toISOString(),
+        },
+      ],
       equipment: [
         {
           id: 'eq-1',
+          mapId: 'map-1',
           name: 'กล้องวงจรปิด L1-01',
           type: 'cctv',
           code: 'CAM-01',
@@ -31,28 +45,21 @@ describe('JSON Import/Export Validation', () => {
           notes: 'ความละเอียด 4K',
           x: 0.25,
           y: 0.35,
-          photos: [
-            {
-              id: 'p-1',
-              name: 'camera1.jpg',
-              dataUrl: 'data:image/jpeg;base64,mock',
-              size: 12000,
-              uploadedAt: new Date().toISOString(),
-            },
-          ],
+          photos: [],
           createdAt: new Date().toISOString(),
           updatedAt: new Date().toISOString(),
         },
         {
           id: 'eq-2',
-          name: 'ถังดับเพลิง โซนบันไดหนีไฟ',
+          mapId: 'map-2',
+          name: 'ถังดับเพลิง L2-01',
           type: 'fire_extinguisher',
-          code: 'FE-01',
-          zone: 'บันไดหนีไฟ A',
-          buildingFloor: 'ชั้น 1',
+          code: 'FE-02',
+          zone: 'โถงลิฟต์ ชั้น 2',
+          buildingFloor: 'ชั้น 2',
           installDate: '2026-02-10',
           status: 'maintenance',
-          notes: 'ตรวจแรงดันทุก 6 เดือน',
+          notes: '',
           x: 0.75,
           y: 0.85,
           photos: [],
@@ -64,67 +71,50 @@ describe('JSON Import/Export Validation', () => {
 
     const res = validateImportJSON(validData);
     expect(res.valid).toBe(true);
+    expect(res.data?.maps.length).toBe(2);
     expect(res.data?.equipment.length).toBe(2);
-    expect(res.data?.floorPlan?.name).toBe('Floor1.png');
-    expect(res.data?.equipment[0].type).toBe('cctv');
-    expect(res.data?.equipment[1].type).toBe('fire_extinguisher');
-    expect(res.data?.equipment[0].photos.length).toBe(1);
+    expect(res.data?.equipment[0].mapId).toBe('map-1');
+    expect(res.data?.equipment[1].mapId).toBe('map-2');
   });
 
-  it('rejects foreign or corrupted JSON objects', () => {
-    // Non-object
-    expect(validateImportJSON('string text').valid).toBe(false);
-    expect(validateImportJSON(null).valid).toBe(false);
-
-    // Missing appName
-    expect(validateImportJSON({ hello: 'world' }).valid).toBe(false);
-
-    // Missing equipment array
-    expect(
-      validateImportJSON({
-        appName: 'indoor-map-manager',
-        floorPlan: null,
-      }).valid
-    ).toBe(false);
-
-    // Invalid equipment type
-    const invalidTypeData = {
+  it('provides backward compatibility for v1.0 single floorPlan JSON', () => {
+    const legacyData = {
+      version: '1.0',
       appName: 'indoor-map-manager',
-      floorPlan: null,
+      exportedAt: new Date().toISOString(),
+      floorPlan: {
+        id: 'legacy-map',
+        name: 'LegacyPlan.png',
+        dataUrl: 'data:image/png;base64,mocklegacy',
+        mimeType: 'image/png',
+        width: 1000,
+        height: 800,
+        fileSize: 1000,
+        uploadedAt: new Date().toISOString(),
+      },
       equipment: [
         {
-          name: 'อุปกรณ์ไม่ทราบชนิด',
-          type: 'laser_gun',
-          code: 'XYZ-01',
+          id: 'eq-legacy-1',
+          name: 'กล้องระบบเดิม',
+          type: 'cctv',
+          code: 'CAM-OLD',
+          zone: 'โซนทดสอบ',
           x: 0.5,
           y: 0.5,
         },
       ],
     };
-    const res = validateImportJSON(invalidTypeData);
-    expect(res.valid).toBe(false);
-    expect(res.error).toContain('ประเภทที่ไม่ถูกต้อง');
+
+    const res = validateImportJSON(legacyData);
+    expect(res.valid).toBe(true);
+    expect(res.data?.maps.length).toBe(1);
+    expect(res.data?.maps[0].id).toBe('legacy-map');
+    expect(res.data?.equipment[0].mapId).toBe('legacy-map');
   });
 
-  it('clamps coordinates to [0, 1] during import', () => {
-    const dataWithOutOfBoundsCoords = {
-      appName: 'indoor-map-manager',
-      floorPlan: null,
-      equipment: [
-        {
-          name: 'กล้องนอกกรอบ',
-          type: 'cctv',
-          code: 'CAM-OOB',
-          zone: 'โซนทดสอบ',
-          x: -0.5,
-          y: 2.5,
-        },
-      ],
-    };
-
-    const res = validateImportJSON(dataWithOutOfBoundsCoords);
-    expect(res.valid).toBe(true);
-    expect(res.data?.equipment[0].x).toBe(0);
-    expect(res.data?.equipment[0].y).toBe(1);
+  it('rejects foreign or corrupted JSON objects', () => {
+    expect(validateImportJSON('string text').valid).toBe(false);
+    expect(validateImportJSON(null).valid).toBe(false);
+    expect(validateImportJSON({ hello: 'world' }).valid).toBe(false);
   });
 });

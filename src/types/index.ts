@@ -21,9 +21,11 @@ export interface EquipmentPhoto {
 
 /**
  * ข้อมูลจุดติดตั้งอุปกรณ์ (พิกัดเป็น Normalized Coordinates 0.0 - 1.0)
+ * แต่ละจุดผูกกับ mapId เพื่อแยกข้อมูลแผนที่ออกจากกันอย่างสมบูรณ์
  */
 export interface EquipmentPin {
   id: string;
+  mapId: string;              // รหัสแผนที่ที่หมุดนี้สังกัดอยู่ (ห้ามปะปนกัน)
   name: string;               // ชื่ออุปกรณ์
   type: EquipmentType;        // ประเภทอุปกรณ์
   code: string;               // รหัสอุปกรณ์ (เช่น CCTV-01, FE-02)
@@ -40,28 +42,32 @@ export interface EquipmentPin {
 }
 
 /**
- * ข้อมูลแผนที่ผังอาคาร
+ * ข้อมูลแผนที่ผังอาคาร (รองรับหลายแผนที่)
  */
 export interface FloorPlan {
   id: string;
-  name: string;
+  name: string;               // ชื่อแผนที่ เช่น "ชั้น 1", "ชั้น 2", "อาคาร A", "ลานจอดรถ"
   dataUrl: string;            // Base64 data URL ของภาพแผนที่
   mimeType: string;           // 'image/png' | 'image/jpeg' | 'image/svg+xml' etc.
   width: number;              // ความกว้างจริงของภาพ
   height: number;             // ความสูงจริงของภาพ
   fileSize: number;           // ขนาดไฟล์ (bytes)
   uploadedAt: string;         // วันที่อัปโหลด
+  updatedAt?: string;         // วันที่แก้ไขล่าสุด
 }
 
 /**
- * ข้อมูลโครงสร้างสำหรับ Export/Import JSON
+ * ข้อมูลโครงสร้างสำหรับ Export/Import JSON (เวอร์ชัน 2.0 รองรับหลายแผนที่)
  */
 export interface FloorPlanProjectExport {
-  version: '1.0';
+  version: '2.0' | '1.0';
   exportedAt: string;
   appName: 'indoor-map-manager';
-  floorPlan: FloorPlan | null;
+  activeMapId?: string;
+  maps: FloorPlan[];
   equipment: EquipmentPin[];
+  // รองรับรูปแบบเดิม v1.0
+  floorPlan?: FloorPlan | null;
 }
 
 /**
