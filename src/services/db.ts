@@ -23,70 +23,89 @@ interface IndoorMapDB extends DBSchema {
   };
 }
 
-const DB_NAME = 'IndoorEquipmentMapDB';
-const DB_VERSION = 2;
+// ใช้ชื่อฐานข้อมูล v3 เพื่อตัดปัญหา upgrade lock/transaction deadlock จากเวอร์ชันเดิมในเบราว์เซอร์ของผู้ใช้
+const DB_NAME = 'IndoorEquipmentMaps_v3';
+const DB_VERSION = 1;
 
 let dbPromise: Promise<IDBPDatabase<IndoorMapDB>> | null = null;
+let useLocalStorageFallback = false;
 
+// Fallback keys สำหรับ localStorage ในกรณีที่ IndexedDB ถูกบล็อกหรือทำงานไม่ได้
+const LS_PLANS_KEY = 'indoor_map_floor_plans_v3';
+const LS_EQUIPMENT_KEY = 'indoor_map_equipment_v3';
+const LS_SETTINGS_KEY = 'indoor_map_settings_v3';
+
+function getLocalStorage<T>(key: string, defaultValue: T): T {
+  try {
+    const raw = localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : defaultValue;
+  } catch {
+    return defaultValue;
+  }
+}
+
+function setLocalStorage<T>(key: string, value: T): void {
+  try {
+    localStorage.setItem(key, JSON.stringify(value));
+  } catch (e) {
+    console.warn('LocalStorage save failed:', e);
+  }
+}
+
+/**
+ * ดึงการเชื่อมต่อ IndexedDB พร้อม Timeout ป้องกันการค้างตลอดกาล
+ */
 export function getDB(): Promise<IDBPDatabase<IndoorMapDB>> {
+  if (useLocalStorageFallback) {
+    return Promise.reject(new Error('Using localStorage fallback'));
+  }
+
   if (!dbPromise) {
-    dbPromise = openDB<IndoorMapDB>(DB_NAME, DB_VERSION, {
-      async upgrade(db, oldVersion, _newVersion, transaction) {
-        // สร้าง store สำหรับแผนที่หลายแผนที่
+    const openPromise = openDB<IndoorMapDB>(DB_NAME, DB_VERSION, {
+      upgrade(db) {
+        // อัปเกรดแบบ Synchronous 100% ห้ามมี async/await ใน upgrade เพื่อป้องกัน transaction inactive deadlock
         if (!db.objectStoreNames.contains('floorPlans')) {
           db.createObjectStore('floorPlans', { keyPath: 'id' });
         }
 
-        // จัดการ store อุปกรณ์
-        let eqStore;
         if (!db.objectStoreNames.contains('equipment')) {
-          eqStore = db.createObjectStore('equipment', { keyPath: 'id' });
-        } else {
-          eqStore = transaction.objectStore('equipment');
-        }
-
-        if (!eqStore.indexNames.contains('by-mapId')) {
+          const eqStore = db.createObjectStore('equipment', { keyPath: 'id' });
           eqStore.createIndex('by-mapId', 'mapId');
-        }
-        if (!eqStore.indexNames.contains('by-type')) {
           eqStore.createIndex('by-type', 'type');
-        }
-        if (!eqStore.indexNames.contains('by-status')) {
           eqStore.createIndex('by-status', 'status');
-        }
-        if (!eqStore.indexNames.contains('by-code')) {
           eqStore.createIndex('by-code', 'code');
         }
 
         if (!db.objectStoreNames.contains('settings')) {
           db.createObjectStore('settings');
         }
-
-        // ถ้าอัปเกรดจาก v1 (ที่มี store floorPlan เดิม)
-        if (oldVersion < 2 && db.objectStoreNames.contains('floorPlan' as unknown as 'floorPlans')) {
-          try {
-            // @ts-expect-error legacy store migration
-            const oldPlanStore = transaction.objectStore('floorPlan');
-            const oldPlan = (await oldPlanStore.get('current')) as FloorPlan | undefined;
-            if (oldPlan) {
-              const plansStore = transaction.objectStore('floorPlans');
-              await plansStore.put(oldPlan);
-              // อัปเดตอุปกรณ์เดิมให้ผูกกับ mapId นี้
-              const allEq = (await eqStore.getAll()) as EquipmentPin[];
-              for (const eq of allEq) {
-                if (!eq.mapId) {
-                  eq.mapId = oldPlan.id;
-                  await eqStore.put(eq);
-                }
-              }
-            }
-          } catch {
-            // ignore
-          }
-        }
+      },
+      blocked() {
+        console.warn('IndexedDB upgrade blocked by an existing tab.');
+      },
+      blocking(_currentVersion, _blockedVersion, event) {
+        console.warn('IndexedDB is blocking an upgrade in another tab. Closing...');
+        const target = event.target as unknown as { result?: IDBPDatabase<IndoorMapDB> };
+        target?.result?.close?.();
+      },
+      terminated() {
+        dbPromise = null;
       },
     });
+
+    // เพิ่ม Timeout ป้องกัน IndexedDB ค้างเกิน 1200ms
+    const timeoutPromise = new Promise<never>((_, reject) => {
+      setTimeout(() => reject(new Error('IndexedDB open timeout')), 1200);
+    });
+
+    dbPromise = Promise.race([openPromise, timeoutPromise]).catch((err) => {
+      console.warn('IndexedDB failed or timed out, switching to localStorage fallback:', err);
+      useLocalStorageFallback = true;
+      dbPromise = null;
+      throw err;
+    });
   }
+
   return dbPromise;
 }
 
@@ -94,164 +113,217 @@ export function getDB(): Promise<IDBPDatabase<IndoorMapDB>> {
 // แผนที่ผังอาคาร (Floor Plans)
 // ---------------------------------------------
 
-/**
- * ดึงรายการแผนที่ทั้งหมด
- */
 export async function getAllFloorPlansFromDB(): Promise<FloorPlan[]> {
-  const db = await getDB();
-  return db.getAll('floorPlans');
+  try {
+    const db = await getDB();
+    return await db.getAll('floorPlans');
+  } catch {
+    return getLocalStorage<FloorPlan[]>(LS_PLANS_KEY, []);
+  }
 }
 
-/**
- * ดึงแผนที่เดี่ยวตาม ID
- */
 export async function getFloorPlanByIdFromDB(id: string): Promise<FloorPlan | null> {
-  const db = await getDB();
-  const plan = await db.get('floorPlans', id);
-  return plan || null;
+  try {
+    const db = await getDB();
+    const plan = await db.get('floorPlans', id);
+    return plan || null;
+  } catch {
+    const plans = getLocalStorage<FloorPlan[]>(LS_PLANS_KEY, []);
+    return plans.find((p) => p.id === id) || null;
+  }
 }
 
-/**
- * บันทึกหรืออัปเดตแผนที่
- */
 export async function saveFloorPlanToDB(floorPlan: FloorPlan): Promise<void> {
-  const db = await getDB();
-  await db.put('floorPlans', floorPlan);
+  try {
+    const db = await getDB();
+    await db.put('floorPlans', floorPlan);
+  } catch {
+    const plans = getLocalStorage<FloorPlan[]>(LS_PLANS_KEY, []);
+    const idx = plans.findIndex((p) => p.id === floorPlan.id);
+    if (idx >= 0) {
+      plans[idx] = floorPlan;
+    } else {
+      plans.push(floorPlan);
+    }
+    setLocalStorage(LS_PLANS_KEY, plans);
+  }
 }
 
-/**
- * บันทึกชุดแผนที่ (Bulk save)
- */
 export async function saveAllFloorPlansToDB(plans: FloorPlan[]): Promise<void> {
-  const db = await getDB();
-  const tx = db.transaction('floorPlans', 'readwrite');
-  for (const plan of plans) {
-    await tx.store.put(plan);
+  try {
+    const db = await getDB();
+    const tx = db.transaction('floorPlans', 'readwrite');
+    for (const plan of plans) {
+      tx.store.put(plan);
+    }
+    await tx.done;
+  } catch {
+    setLocalStorage(LS_PLANS_KEY, plans);
   }
-  await tx.done;
 }
 
-/**
- * แก้ไขชื่อแผนที่
- */
 export async function updateFloorPlanNameInDB(id: string, newName: string): Promise<void> {
-  const db = await getDB();
-  const plan = await db.get('floorPlans', id);
-  if (plan) {
-    plan.name = newName;
-    plan.updatedAt = new Date().toISOString();
-    await db.put('floorPlans', plan);
+  try {
+    const db = await getDB();
+    const plan = await db.get('floorPlans', id);
+    if (plan) {
+      plan.name = newName;
+      plan.updatedAt = new Date().toISOString();
+      await db.put('floorPlans', plan);
+    }
+  } catch {
+    const plans = getLocalStorage<FloorPlan[]>(LS_PLANS_KEY, []);
+    const plan = plans.find((p) => p.id === id);
+    if (plan) {
+      plan.name = newName;
+      plan.updatedAt = new Date().toISOString();
+      setLocalStorage(LS_PLANS_KEY, plans);
+    }
   }
 }
 
-/**
- * ลบแผนที่ (พร้อมลบหมุดทั้งหมดที่สังกัดแผนที่นี้)
- */
 export async function deleteFloorPlanFromDB(id: string): Promise<void> {
-  const db = await getDB();
-  // 1. ลบแผนที่
-  await db.delete('floorPlans', id);
+  try {
+    const db = await getDB();
+    await db.delete('floorPlans', id);
 
-  // 2. ลบหมุดที่สังกัดแผนที่นี้
-  const tx = db.transaction('equipment', 'readwrite');
-  const index = tx.store.index('by-mapId');
-  let cursor = await index.openCursor(IDBKeyRange.only(id));
-  while (cursor) {
-    await cursor.delete();
-    cursor = await cursor.continue();
+    // ลบหมุดที่สังกัดแผนที่นี้
+    const tx = db.transaction('equipment', 'readwrite');
+    const index = tx.store.index('by-mapId');
+    let cursor = await index.openCursor(IDBKeyRange.only(id));
+    while (cursor) {
+      await cursor.delete();
+      cursor = await cursor.continue();
+    }
+    await tx.done;
+  } catch {
+    const plans = getLocalStorage<FloorPlan[]>(LS_PLANS_KEY, []);
+    setLocalStorage(
+      LS_PLANS_KEY,
+      plans.filter((p) => p.id !== id)
+    );
+
+    const eq = getLocalStorage<EquipmentPin[]>(LS_EQUIPMENT_KEY, []);
+    setLocalStorage(
+      LS_EQUIPMENT_KEY,
+      eq.filter((p) => p.mapId !== id)
+    );
   }
-  await tx.done;
 }
 
-/**
- * ล้างข้อมูลแผนที่ทั้งหมด
- */
 export async function clearAllFloorPlansFromDB(): Promise<void> {
-  const db = await getDB();
-  await db.clear('floorPlans');
+  try {
+    const db = await getDB();
+    await db.clear('floorPlans');
+  } catch {
+    setLocalStorage(LS_PLANS_KEY, []);
+  }
 }
 
 // ---------------------------------------------
 // จุดติดตั้งอุปกรณ์ (Equipment Pins)
 // ---------------------------------------------
 
-/**
- * ดึงรายการอุปกรณ์ทั้งหมดในระบบ
- */
 export async function getAllEquipmentFromDB(): Promise<EquipmentPin[]> {
-  const db = await getDB();
-  return db.getAll('equipment');
-}
-
-/**
- * ดึงรายการอุปกรณ์เฉพาะแผนที่ที่ระบุ (แยกข้อมูลออกจากกันอย่างสมบูรณ์)
- */
-export async function getEquipmentByMapIdFromDB(mapId: string): Promise<EquipmentPin[]> {
-  const db = await getDB();
-  return db.getAllFromIndex('equipment', 'by-mapId', mapId);
-}
-
-/**
- * บันทึกหรืออัปเดตอุปกรณ์เดี่ยว
- */
-export async function saveEquipmentToDB(equipment: EquipmentPin): Promise<void> {
-  const db = await getDB();
-  await db.put('equipment', equipment);
-}
-
-/**
- * บันทึกรายการอุปกรณ์แบบชุด (Bulk save)
- */
-export async function saveAllEquipmentToDB(items: EquipmentPin[]): Promise<void> {
-  const db = await getDB();
-  const tx = db.transaction('equipment', 'readwrite');
-  for (const item of items) {
-    await tx.store.put(item);
+  try {
+    const db = await getDB();
+    return await db.getAll('equipment');
+  } catch {
+    return getLocalStorage<EquipmentPin[]>(LS_EQUIPMENT_KEY, []);
   }
-  await tx.done;
 }
 
-/**
- * ลบอุปกรณ์ตาม ID
- */
+export async function getEquipmentByMapIdFromDB(mapId: string): Promise<EquipmentPin[]> {
+  try {
+    const db = await getDB();
+    return await db.getAllFromIndex('equipment', 'by-mapId', mapId);
+  } catch {
+    const items = getLocalStorage<EquipmentPin[]>(LS_EQUIPMENT_KEY, []);
+    return items.filter((p) => p.mapId === mapId);
+  }
+}
+
+export async function saveEquipmentToDB(equipment: EquipmentPin): Promise<void> {
+  try {
+    const db = await getDB();
+    await db.put('equipment', equipment);
+  } catch {
+    const items = getLocalStorage<EquipmentPin[]>(LS_EQUIPMENT_KEY, []);
+    const idx = items.findIndex((p) => p.id === equipment.id);
+    if (idx >= 0) {
+      items[idx] = equipment;
+    } else {
+      items.push(equipment);
+    }
+    setLocalStorage(LS_EQUIPMENT_KEY, items);
+  }
+}
+
+export async function saveAllEquipmentToDB(items: EquipmentPin[]): Promise<void> {
+  try {
+    const db = await getDB();
+    const tx = db.transaction('equipment', 'readwrite');
+    for (const item of items) {
+      tx.store.put(item);
+    }
+    await tx.done;
+  } catch {
+    setLocalStorage(LS_EQUIPMENT_KEY, items);
+  }
+}
+
 export async function deleteEquipmentFromDB(id: string): Promise<void> {
-  const db = await getDB();
-  await db.delete('equipment', id);
+  try {
+    const db = await getDB();
+    await db.delete('equipment', id);
+  } catch {
+    const items = getLocalStorage<EquipmentPin[]>(LS_EQUIPMENT_KEY, []);
+    setLocalStorage(
+      LS_EQUIPMENT_KEY,
+      items.filter((p) => p.id !== id)
+    );
+  }
 }
 
-/**
- * ล้างข้อมูลอุปกรณ์ทั้งหมด
- */
 export async function clearAllEquipmentFromDB(): Promise<void> {
-  const db = await getDB();
-  await db.clear('equipment');
+  try {
+    const db = await getDB();
+    await db.clear('equipment');
+  } catch {
+    setLocalStorage(LS_EQUIPMENT_KEY, []);
+  }
 }
 
 // ---------------------------------------------
 // การตั้งค่าระบบ (Settings)
 // ---------------------------------------------
 
-/**
- * บันทึก ID ของแผนที่ล่าสุดที่กำลังเปิดดู
- */
 export async function saveActiveMapIdToDB(mapId: string | null): Promise<void> {
-  const db = await getDB();
-  if (mapId) {
-    await db.put('settings', mapId, 'activeMapId');
-  } else {
-    await db.delete('settings', 'activeMapId');
+  try {
+    const db = await getDB();
+    if (mapId) {
+      await db.put('settings', mapId, 'activeMapId');
+    } else {
+      await db.delete('settings', 'activeMapId');
+    }
+  } catch {
+    const settings = getLocalStorage<Record<string, unknown>>(LS_SETTINGS_KEY, {});
+    if (mapId) {
+      settings.activeMapId = mapId;
+    } else {
+      delete settings.activeMapId;
+    }
+    setLocalStorage(LS_SETTINGS_KEY, settings);
   }
 }
 
-/**
- * ดึง ID ของแผนที่ล่าสุดที่กำลังเปิดดู
- */
 export async function getActiveMapIdFromDB(): Promise<string | null> {
   try {
     const db = await getDB();
     const id = await db.get('settings', 'activeMapId');
     return typeof id === 'string' ? id : null;
   } catch {
-    return null;
+    const settings = getLocalStorage<Record<string, unknown>>(LS_SETTINGS_KEY, {});
+    return typeof settings.activeMapId === 'string' ? settings.activeMapId : null;
   }
 }
