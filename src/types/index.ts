@@ -168,11 +168,21 @@ export interface OfflineMutation {
   retryCount: number;
 }
 
+export type RealtimeMessageType =
+  | 'PIN_UPSERT'
+  | 'PIN_DELETE'
+  | 'MAP_UPSERT'
+  | 'MAP_DELETE'
+  | 'MAP_CHUNK_START'
+  | 'MAP_CHUNK_PART'
+  | 'REQUEST_SYNC'
+  | 'RESPONSE_SYNC';
+
 /**
  * โครงสร้างข้อความสำหรับ Realtime Broadcast
  */
 export interface RealtimeMessage {
-  type: 'PIN_UPSERT' | 'PIN_DELETE' | 'MAP_UPSERT' | 'MAP_DELETE' | 'REQUEST_SYNC' | 'RESPONSE_SYNC';
+  type: RealtimeMessageType;
   senderId: string;
   senderName: string;
   timestamp: string;

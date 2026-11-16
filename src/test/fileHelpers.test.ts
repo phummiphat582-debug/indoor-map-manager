@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { validateImageFile, formatFileSize } from '../utils/fileHelpers';
+import { validateImageFile, formatFileSize, compressAndReadImage } from '../utils/fileHelpers';
 
 describe('File Helper & Validation Utilities', () => {
   it('validates allowed image formats (PNG, JPG, JPEG, SVG)', () => {
@@ -38,5 +38,17 @@ describe('File Helper & Validation Utilities', () => {
     expect(formatFileSize(0)).toBe('0 B');
     expect(formatFileSize(1024)).toBe('1.0 KB');
     expect(formatFileSize(1024 * 1024 * 2.5)).toBe('2.5 MB');
+  });
+
+  it('handles compressAndReadImage safely for SVG and image formats', async () => {
+    const svgFile = new File(['<svg width="800" height="600"></svg>'], 'plan.svg', {
+      type: 'image/svg+xml',
+    });
+    const result = await compressAndReadImage(svgFile);
+
+    expect(result.dataUrl).toBeDefined();
+    expect(result.dataUrl).toContain('data:');
+    expect(result.width).toBeGreaterThan(0);
+    expect(result.height).toBeGreaterThan(0);
   });
 });

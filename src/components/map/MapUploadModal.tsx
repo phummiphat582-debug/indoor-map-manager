@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { UploadCloud, X, AlertCircle, FileCheck, Check, Loader2 } from 'lucide-react';
 import type { FloorPlan } from '../../types';
-import { validateImageFile, readFileAsDataURL, getImageDimensions, formatFileSize } from '../../utils/fileHelpers';
+import { validateImageFile, compressAndReadImage, formatFileSize } from '../../utils/fileHelpers';
 import { MAX_FILE_SIZE_MB } from '../../constants/equipmentConfig';
 
 interface MapUploadModalProps {
@@ -50,12 +50,11 @@ export const MapUploadModal: React.FC<MapUploadModalProps> = ({
 
     setIsLoading(true);
     try {
-      const dataUrl = await readFileAsDataURL(file);
-      const dims = await getImageDimensions(dataUrl);
+      const processed = await compressAndReadImage(file);
 
       setSelectedFile(file);
-      setPreviewUrl(dataUrl);
-      setFileDimensions(dims);
+      setPreviewUrl(processed.dataUrl);
+      setFileDimensions({ width: processed.width, height: processed.height });
 
       // ตั้งชื่อเริ่มต้นตามชื่อไฟล์ถ้ายังไม่ได้เปลี่ยน
       if (!mapName || mapName.startsWith('ชั้น ')) {

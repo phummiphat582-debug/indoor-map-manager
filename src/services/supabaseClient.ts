@@ -2,13 +2,28 @@ import { createClient } from '@supabase/supabase-js';
 import type { SupabaseClient } from '@supabase/supabase-js';
 import type { EquipmentPin, FloorPlan } from '../types';
 
+export const DEFAULT_SUPABASE_URL = 'https://rimwhvvashgcaepyavjq.supabase.co';
+export const DEFAULT_SUPABASE_ANON_KEY =
+  'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6InJpbXdodnZhc2hnY2FlcHlhdmpxIiwicm9sZSI6ImFub24iLCJpYXQiOjE3ODU1NjkwNzcsImV4cCI6MjEwMTE0NTA3N30.XAo8nJPSDHokoQIv4GkMcXghb3uBeV5I7Re4Wb0mxFw';
+
 let cachedClient: SupabaseClient | null = null;
 let currentUrl = '';
 let currentKey = '';
 
+export function getSupabaseConfig(): { url: string; anonKey: string } {
+  const localUrl = localStorage.getItem('indoor_map_supabase_url');
+  const localKey = localStorage.getItem('indoor_map_supabase_key');
+
+  return {
+    url: localUrl || DEFAULT_SUPABASE_URL,
+    anonKey: localKey || DEFAULT_SUPABASE_ANON_KEY,
+  };
+}
+
 export function getSupabaseClient(url?: string, anonKey?: string): SupabaseClient | null {
-  const targetUrl = url || localStorage.getItem('indoor_map_supabase_url') || '';
-  const targetKey = anonKey || localStorage.getItem('indoor_map_supabase_key') || '';
+  const config = getSupabaseConfig();
+  const targetUrl = url || config.url;
+  const targetKey = anonKey || config.anonKey;
 
   if (!targetUrl || !targetKey) {
     return null;
@@ -22,7 +37,7 @@ export function getSupabaseClient(url?: string, anonKey?: string): SupabaseClien
     cachedClient = createClient(targetUrl, targetKey, {
       realtime: {
         params: {
-          eventsPerSecond: 10,
+          eventsPerSecond: 15,
         },
       },
     });
@@ -51,7 +66,12 @@ export function clearSupabaseConfig(): void {
  * สคริปต์ SQL สำหรับสร้างตารางบน Supabase พร้อมเปิดใช้งาน Realtime และ RLS ครบถ้วน
  */
 export function getSupabaseMigrationSQL(): string {
-  return `-- 1. สร้างตารางแผนที่ผังอาคาร
+  return `-- ==============================================================================
+-- INDOOR EQUIPMENT MAP MANAGER - SUPABASE REALTIME DATABASE SETUP
+-- Copy all and paste into: https://supabase.com/dashboard/project/rimwhvvashgcaepyavjq/sql/new
+-- ==============================================================================
+
+-- 1. สร้างตารางแผนที่ผังอาคาร (Floor Plans)
 create table if not exists indoor_floor_plans (
   id text primary key,
   name text not null,
@@ -66,7 +86,7 @@ create table if not exists indoor_floor_plans (
   version integer not null default 1
 );
 
--- 2. สร้างตารางจุดติดตั้งอุปกรณ์
+-- 2. สร้างตารางจุดติดตั้งอุปกรณ์ (Equipment Pins)
 create table if not exists indoor_equipment (
   id text primary key,
   map_id text not null references indoor_floor_plans(id) on delete cascade,
@@ -87,12 +107,12 @@ create table if not exists indoor_equipment (
   version integer not null default 1
 );
 
--- 3. สร้างดัชนี (Index) เพื่อการสืบค้นที่รวดเร็ว
+-- 3. สร้างดัชนี (Index) เพื่อการค้นหาที่รวดเร็ว
 create index if not exists idx_indoor_equipment_map_id on indoor_equipment(map_id);
 create index if not exists idx_indoor_equipment_type on indoor_equipment(type);
 create index if not exists idx_indoor_equipment_code on indoor_equipment(code);
 
--- 4. เปิดใช้งาน Realtime
+-- 4. เปิดใช้งาน Realtime สำหรับทั้งสองตาราง
 alter publication supabase_realtime add table indoor_floor_plans;
 alter publication supabase_realtime add table indoor_equipment;
 

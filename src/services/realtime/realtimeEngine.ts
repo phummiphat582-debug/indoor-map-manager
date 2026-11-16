@@ -21,6 +21,9 @@ const OFFLINE_QUEUE_KEY = 'indoor_map_offline_queue_v1';
 // Public demo API key สำหรับ PieSocket WebSocket relay (ไม่มีค่าใช้จ่าย ใช้งานร่วมกันแบบแยกห้องได้)
 const PIESOCKET_API_KEY = 'VC3OtKQDmqqHGZXtdtvFtDqn61WFioAcXjhEco27';
 
+// ขนาดของแต่ละชิ้นส่วนข้อมูล (48 KB) ปลอดภัยใต้เพดาน 256 KB ของ Supabase Realtime
+export const REALTIME_CHUNK_SIZE = 48 * 1024;
+
 export interface RealtimeEngineListener {
   onStatusChange?: (status: ConnectionStatus) => void;
   onLastSyncChange?: (date: Date) => void;
@@ -41,9 +44,35 @@ class RealtimeEngine {
   private supabaseChannel: any = null;
   private reconnectTimer: any = null;
   private clientId: string = `client-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
-  private provider: RealtimeProviderType = 'cloud-relay';
-  private roomId: string = 'default-room';
+  private provider: RealtimeProviderType = 'supabase';
+  private roomId: string = 'main-building';
   private offlineQueue: OfflineMutation[] = [];
+  private keepaliveTimer: any = null;
+
+  // บัฟเฟอร์สำหรับประกอบชิ้นส่วนแผนที่ (Chunk Reassembly Buffer)
+  private mapChunkBuffers: Map<
+    string,
+    {
+      meta: {
+        mapId: string;
+        name: string;
+        mimeType: string;
+        width: number;
+        height: number;
+        fileSize: number;
+        uploadedAt: string;
+        updatedAt: string;
+        updatedBy: string;
+        version: number;
+      };
+      chunks: string[];
+      receivedCount: number;
+      timer: any;
+    }
+  > = new Map();
+
+  // ตัวจัดหาข้อมูลปัจจุบันเพื่อตอบกลับเมื่อมีอุปกรณ์อื่นขอซิงก์
+  private syncDataProvider: (() => { maps: FloorPlan[]; pins: EquipmentPin[] }) | null = null;
 
   constructor() {
     this.loadConfig();
@@ -104,6 +133,22 @@ class RealtimeEngine {
     this.connect();
   }
 
+  public setSyncDataProvider(provider: () => { maps: FloorPlan[]; pins: EquipmentPin[] }) {
+    this.syncDataProvider = provider;
+  }
+
+  public requestSync() {
+    const user = getCurrentUser();
+    const message: RealtimeMessage = {
+      type: 'REQUEST_SYNC',
+      senderId: this.clientId,
+      senderName: user.name,
+      timestamp: new Date().toISOString(),
+      payload: {},
+    };
+    this.send(message);
+  }
+
   // ----------------------------------------------------
   // การเชื่อมต่อโครงข่าย (WebSocket & Supabase)
   // ----------------------------------------------------
@@ -119,6 +164,11 @@ class RealtimeEngine {
   }
 
   private disconnect() {
+    if (this.keepaliveTimer) {
+      clearInterval(this.keepaliveTimer);
+      this.keepaliveTimer = null;
+    }
+
     if (this.reconnectTimer) {
       clearTimeout(this.reconnectTimer);
       this.reconnectTimer = null;
@@ -151,6 +201,9 @@ class RealtimeEngine {
         this.setStatus('connected');
         this.updateSyncTime();
         this.flushOfflineQueue();
+        setTimeout(() => {
+          this.requestSync();
+        }, 300);
       };
 
       this.ws.onmessage = (event) => {
@@ -182,6 +235,10 @@ class RealtimeEngine {
   }
 
   private connectSupabase() {
+    if (this.supabaseChannel) {
+      return;
+    }
+
     const client = getSupabaseClient();
     if (!client) {
       console.warn('Supabase credentials not configured, falling back to Cloud Relay');
@@ -215,6 +272,22 @@ class RealtimeEngine {
             this.setStatus('connected');
             this.updateSyncTime();
             this.flushOfflineQueue();
+
+            setTimeout(() => {
+              this.requestSync();
+            }, 300);
+
+            // ส่ง Heartbeat Ping ทุก 25 วินาที เพื่อรักษาสถานะเชื่อมต่อออนไลน์ตลอด 24/7
+            if (this.keepaliveTimer) clearInterval(this.keepaliveTimer);
+            this.keepaliveTimer = setInterval(() => {
+              if (this.supabaseChannel) {
+                this.supabaseChannel.send({
+                  type: 'broadcast',
+                  event: 'heartbeat',
+                  payload: { timestamp: Date.now() },
+                }).catch(() => {});
+              }
+            }, 25000);
           } else if (status === 'CHANNEL_ERROR') {
             this.setStatus('error');
             this.scheduleReconnect();
@@ -354,15 +427,64 @@ class RealtimeEngine {
       version: (map.version || 1) + 1,
     };
 
-    const message: RealtimeMessage = {
-      type: 'MAP_UPSERT',
-      senderId: this.clientId,
-      senderName: user.name,
-      timestamp: new Date().toISOString(),
-      payload: updatedMap,
-    };
+    const dataUrl = updatedMap.dataUrl || '';
 
-    this.send(message);
+    if (dataUrl.length > REALTIME_CHUNK_SIZE) {
+      // แผนที่มีขนาดใหญ่: แบ่งส่งแบบ Chunked Transfer เพื่อไม่ให้เกินเพดาน 256 KB ของ WebSocket
+      const totalChunks = Math.ceil(dataUrl.length / REALTIME_CHUNK_SIZE);
+
+      const startMessage: RealtimeMessage = {
+        type: 'MAP_CHUNK_START',
+        senderId: this.clientId,
+        senderName: user.name,
+        timestamp: new Date().toISOString(),
+        payload: {
+          mapId: updatedMap.id,
+          name: updatedMap.name,
+          mimeType: updatedMap.mimeType,
+          width: updatedMap.width,
+          height: updatedMap.height,
+          fileSize: updatedMap.fileSize,
+          uploadedAt: updatedMap.uploadedAt,
+          updatedAt: updatedMap.updatedAt,
+          updatedBy: updatedMap.updatedBy,
+          version: updatedMap.version,
+          totalChunks,
+          totalLength: dataUrl.length,
+        },
+      };
+      this.send(startMessage);
+
+      for (let i = 0; i < totalChunks; i++) {
+        const chunk = dataUrl.substring(i * REALTIME_CHUNK_SIZE, (i + 1) * REALTIME_CHUNK_SIZE);
+        const partMessage: RealtimeMessage = {
+          type: 'MAP_CHUNK_PART',
+          senderId: this.clientId,
+          senderName: user.name,
+          timestamp: new Date().toISOString(),
+          payload: {
+            mapId: updatedMap.id,
+            chunkIndex: i,
+            totalChunks,
+            chunk,
+          },
+        };
+        this.send(partMessage);
+
+        if (i < totalChunks - 1) {
+          await new Promise((res) => setTimeout(res, 15));
+        }
+      }
+    } else {
+      const message: RealtimeMessage = {
+        type: 'MAP_UPSERT',
+        senderId: this.clientId,
+        senderName: user.name,
+        timestamp: new Date().toISOString(),
+        payload: updatedMap,
+      };
+      this.send(message);
+    }
 
     if (this.provider === 'supabase') {
       const client = getSupabaseClient();
@@ -466,6 +588,88 @@ class RealtimeEngine {
       case 'MAP_DELETE':
         this.listeners.forEach((l) => l.onRemoteMapDelete?.(message.payload.id, message.senderName));
         break;
+      case 'MAP_CHUNK_START': {
+        const p = message.payload;
+        if (this.mapChunkBuffers.has(p.mapId)) {
+          const prev = this.mapChunkBuffers.get(p.mapId);
+          if (prev?.timer) clearTimeout(prev.timer);
+        }
+
+        this.mapChunkBuffers.set(p.mapId, {
+          meta: {
+            mapId: p.mapId,
+            name: p.name,
+            mimeType: p.mimeType,
+            width: p.width,
+            height: p.height,
+            fileSize: p.fileSize,
+            uploadedAt: p.uploadedAt,
+            updatedAt: p.updatedAt,
+            updatedBy: p.updatedBy,
+            version: p.version,
+          },
+          chunks: new Array(p.totalChunks),
+          receivedCount: 0,
+          timer: setTimeout(() => {
+            this.mapChunkBuffers.delete(p.mapId);
+          }, 60000),
+        });
+        break;
+      }
+      case 'MAP_CHUNK_PART': {
+        const p = message.payload;
+        const buffer = this.mapChunkBuffers.get(p.mapId);
+        if (!buffer) break;
+
+        if (!buffer.chunks[p.chunkIndex]) {
+          buffer.chunks[p.chunkIndex] = p.chunk;
+          buffer.receivedCount++;
+        }
+
+        if (buffer.receivedCount === p.totalChunks) {
+          if (buffer.timer) clearTimeout(buffer.timer);
+          const fullDataUrl = buffer.chunks.join('');
+          this.mapChunkBuffers.delete(p.mapId);
+
+          const assembledMap: FloorPlan = {
+            id: buffer.meta.mapId,
+            name: buffer.meta.name,
+            dataUrl: fullDataUrl,
+            mimeType: buffer.meta.mimeType,
+            width: buffer.meta.width,
+            height: buffer.meta.height,
+            fileSize: buffer.meta.fileSize,
+            uploadedAt: buffer.meta.uploadedAt,
+            updatedAt: buffer.meta.updatedAt,
+            updatedBy: buffer.meta.updatedBy,
+            version: buffer.meta.version,
+          };
+
+          this.listeners.forEach((l) => l.onRemoteMapUpsert?.(assembledMap, message.senderName));
+        }
+        break;
+      }
+      case 'REQUEST_SYNC': {
+        if (this.syncDataProvider) {
+          try {
+            const data = this.syncDataProvider();
+            if (data && (data.maps.length > 0 || data.pins.length > 0)) {
+              const delay = Math.floor(Math.random() * 200) + 100;
+              setTimeout(async () => {
+                for (const map of data.maps) {
+                  await this.broadcastMapUpsert(map);
+                }
+                for (const pin of data.pins) {
+                  await this.broadcastPinUpsert(pin);
+                }
+              }, delay);
+            }
+          } catch (e) {
+            console.warn('Sync response error:', e);
+          }
+        }
+        break;
+      }
       default:
         break;
     }
@@ -566,9 +770,11 @@ class RealtimeEngine {
         const parsed = JSON.parse(raw);
         if (parsed.provider) this.provider = parsed.provider;
         if (parsed.roomId) this.roomId = parsed.roomId;
+      } else {
+        this.provider = 'supabase';
       }
     } catch {
-      // ignore
+      this.provider = 'supabase';
     }
   }
 

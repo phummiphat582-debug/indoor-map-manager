@@ -27,6 +27,11 @@ import {
   setCurrentUser as saveCurrentUserToStorage,
   canEditEquipment,
 } from './services/auth';
+import {
+  getSupabaseClient,
+  mapSupabaseToEquipment,
+  mapSupabaseToFloorPlan,
+} from './services/supabaseClient';
 import { realtimeEngine } from './services/realtime/realtimeEngine';
 import { exportProjectToJSON, validateImportJSON } from './services/importExport';
 import { useMapTransform } from './hooks/useMapTransform';
@@ -120,7 +125,23 @@ export const AppContent: React.FC = () => {
   const activeEquipment = activeMap ? allEquipment.filter((p) => p.mapId === activeMap.id) : [];
   const selectedPin = activeEquipment.find((p) => p.id === selectedPinId) || null;
 
-  // Initial load from IndexedDB cache (with 1000ms safety timer)
+  // Ref สำหรับส่งมอบข้อมูลล่าสุดให้เครื่องอื่นเมื่อได้รับสัญญาณขอซิงก์ (REQUEST_SYNC)
+  const mapsRef = useRef(maps);
+  const allEquipmentRef = useRef(allEquipment);
+
+  useEffect(() => {
+    mapsRef.current = maps;
+    allEquipmentRef.current = allEquipment;
+  }, [maps, allEquipment]);
+
+  useEffect(() => {
+    realtimeEngine.setSyncDataProvider(() => ({
+      maps: mapsRef.current,
+      pins: allEquipmentRef.current,
+    }));
+  }, []);
+
+  // Initial load from IndexedDB cache & Supabase Cloud (with 1000ms safety timer)
   useEffect(() => {
     let isMounted = true;
 
@@ -132,11 +153,44 @@ export const AppContent: React.FC = () => {
 
     const loadInitialData = async () => {
       try {
-        const [savedMaps, savedEquipment, lastActiveId] = await Promise.all([
+        let [savedMaps, savedEquipment, lastActiveId] = await Promise.all([
           getAllFloorPlansFromDB(),
           getAllEquipmentFromDB(),
           getActiveMapIdFromDB(),
         ]);
+
+        // หากเชื่อมต่อ Supabase สำเร็จ ให้ดึงข้อมูลล่าสุดจากตารางบนคลาวด์มาผสาน
+        const client = getSupabaseClient();
+        if (client && navigator.onLine) {
+          try {
+            const [remoteMapsRes, remotePinsRes] = await Promise.all([
+              client.from('indoor_floor_plans').select('*'),
+              client.from('indoor_equipment').select('*'),
+            ]);
+
+            if (remoteMapsRes.data && remoteMapsRes.data.length > 0) {
+              const mappedRemoteMaps = remoteMapsRes.data.map(mapSupabaseToFloorPlan);
+              const mapMap = new Map(savedMaps.map((m) => [m.id, m]));
+              mappedRemoteMaps.forEach((rm) => {
+                mapMap.set(rm.id, rm);
+                saveFloorPlanToDB(rm);
+              });
+              savedMaps = Array.from(mapMap.values());
+            }
+
+            if (remotePinsRes.data && remotePinsRes.data.length > 0) {
+              const mappedRemotePins = remotePinsRes.data.map(mapSupabaseToEquipment);
+              const pinMap = new Map(savedEquipment.map((p) => [p.id, p]));
+              mappedRemotePins.forEach((rp) => {
+                pinMap.set(rp.id, rp);
+                saveEquipmentToDB(rp);
+              });
+              savedEquipment = Array.from(pinMap.values());
+            }
+          } catch {
+            // หากตารางบน Supabase ยังไม่ได้ถูกสร้าง ให้พึ่งพา Peer Sync และ IndexedDB
+          }
+        }
 
         if (isMounted) {
           setMaps(savedMaps);
@@ -236,6 +290,9 @@ export const AppContent: React.FC = () => {
         });
         saveFloorPlanToDB(remoteMap);
 
+        // หากยังไม่มีแผนที่ที่เปิดอยู่ ให้สลับมาแสดงแผนที่นี้ทันที
+        setActiveMapId((currentActiveId) => currentActiveId || remoteMap.id);
+
         addToast({
           type: 'info',
           title: 'แผนที่อัปเดตเรียลไทม์',
@@ -246,6 +303,8 @@ export const AppContent: React.FC = () => {
       onRemoteMapDelete: (mapId, senderName) => {
         setMaps((prev) => prev.filter((m) => m.id !== mapId));
         deleteFloorPlanFromDB(mapId);
+
+        setActiveMapId((currentActiveId) => (currentActiveId === mapId ? null : currentActiveId));
 
         addToast({
           type: 'info',

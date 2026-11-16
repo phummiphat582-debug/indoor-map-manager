@@ -139,7 +139,7 @@ export const Header: React.FC<HeaderProps> = ({
           <Cloud className="w-4 h-4 text-slate-500 hidden sm:inline" />
           <span className="font-semibold hidden md:inline">
             {connectionStatus === 'connected'
-              ? 'ออนไลน์'
+              ? 'Supabase ออนไลน์'
               : connectionStatus === 'connecting'
               ? 'เชื่อมต่อ...'
               : 'ออฟไลน์'}

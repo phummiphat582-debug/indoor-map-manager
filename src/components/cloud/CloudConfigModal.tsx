@@ -18,6 +18,7 @@ import {
   getSupabaseMigrationSQL,
   saveSupabaseConfig,
   getSupabaseClient,
+  getSupabaseConfig,
 } from '../../services/supabaseClient';
 
 interface CloudConfigModalProps {
@@ -35,14 +36,11 @@ export const CloudConfigModal: React.FC<CloudConfigModalProps> = ({
   onClose,
   onTriggerSync,
 }) => {
+  const currentConfig = getSupabaseConfig();
   const [provider, setProvider] = useState<RealtimeProviderType>(realtimeEngine.getProvider());
   const [roomId, setRoomId] = useState(realtimeEngine.getRoomId());
-  const [supabaseUrl, setSupabaseUrl] = useState(
-    localStorage.getItem('indoor_map_supabase_url') || ''
-  );
-  const [supabaseAnonKey, setSupabaseAnonKey] = useState(
-    localStorage.getItem('indoor_map_supabase_key') || ''
-  );
+  const [supabaseUrl, setSupabaseUrl] = useState(currentConfig.url);
+  const [supabaseAnonKey, setSupabaseAnonKey] = useState(currentConfig.anonKey);
   const [isCopiedSQL, setIsCopiedSQL] = useState(false);
   const [isTestingSupabase, setIsTestingSupabase] = useState(false);
   const [supabaseTestResult, setSupabaseTestResult] = useState<{
@@ -319,8 +317,8 @@ export const CloudConfigModal: React.FC<CloudConfigModalProps> = ({
                   </p>
                 </div>
 
-                {/* Test Connection Button */}
-                <div className="flex items-center gap-2 pt-1">
+                {/* Test Connection Button & SQL Tools */}
+                <div className="flex flex-wrap items-center gap-2 pt-1">
                   <button
                     type="button"
                     onClick={handleTestSupabase}
@@ -343,6 +341,15 @@ export const CloudConfigModal: React.FC<CloudConfigModalProps> = ({
                     )}
                     <span>{isCopiedSQL ? 'คัดลอก SQL แล้ว!' : 'คัดลอก SQL สร้างตาราง'}</span>
                   </button>
+
+                  <a
+                    href="https://supabase.com/dashboard/project/rimwhvvashgcaepyavjq/sql/new"
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="min-h-[40px] px-3 bg-emerald-50 hover:bg-emerald-100 border border-emerald-200 text-emerald-700 text-xs font-semibold rounded-xl flex items-center gap-1.5 transition cursor-pointer"
+                  >
+                    <span>เปิด SQL Editor ใน Dashboard ↗</span>
+                  </a>
                 </div>
 
                 {supabaseTestResult && (

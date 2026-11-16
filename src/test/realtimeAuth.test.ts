@@ -64,4 +64,103 @@ describe('Realtime Engine & Role-Based Access Control (RBAC)', () => {
     realtimeEngine.setRoomId('building-c-lobby');
     expect(realtimeEngine.getRoomId()).toBe('building-c-lobby');
   });
+
+  it('chunks and reassembles large floor plan images across real-time broadcast', async () => {
+    // สร้าง FloorPlan จำลองที่มี dataUrl ขนาด 150 KB (> REALTIME_CHUNK_SIZE 48 KB)
+    const largeDummyDataUrl = 'data:image/jpeg;base64,' + 'A'.repeat(150 * 1024);
+    const testMap = {
+      id: 'map-chunk-test-1',
+      name: 'ชั้น 1 อาคารวิจัย',
+      dataUrl: largeDummyDataUrl,
+      mimeType: 'image/jpeg',
+      width: 2048,
+      height: 1536,
+      fileSize: 150 * 1024,
+      uploadedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      version: 1,
+    };
+
+    let receivedMap: any = null;
+    let receivedSender = '';
+
+    const unsubscribe = realtimeEngine.subscribe({
+      onRemoteMapUpsert: (m, sender) => {
+        receivedMap = m;
+        receivedSender = sender;
+      },
+    });
+
+    // จำลองข้อความเข้าแบบ MAP_CHUNK_START และ MAP_CHUNK_PART
+    const totalChunks = Math.ceil(largeDummyDataUrl.length / (48 * 1024));
+
+    // ส่ง Start
+    (realtimeEngine as any).handleIncomingMessage({
+      type: 'MAP_CHUNK_START',
+      senderId: 'remote-client-999',
+      senderName: 'Somsak (ADMIN)',
+      timestamp: new Date().toISOString(),
+      payload: {
+        mapId: testMap.id,
+        name: testMap.name,
+        mimeType: testMap.mimeType,
+        width: testMap.width,
+        height: testMap.height,
+        fileSize: testMap.fileSize,
+        uploadedAt: testMap.uploadedAt,
+        updatedAt: testMap.updatedAt,
+        updatedBy: 'Somsak (ADMIN)',
+        version: 2,
+        totalChunks,
+        totalLength: largeDummyDataUrl.length,
+      },
+    });
+
+    // ส่ง Parts
+    for (let i = 0; i < totalChunks; i++) {
+      const chunk = largeDummyDataUrl.substring(i * 48 * 1024, (i + 1) * 48 * 1024);
+      (realtimeEngine as any).handleIncomingMessage({
+        type: 'MAP_CHUNK_PART',
+        senderId: 'remote-client-999',
+        senderName: 'Somsak (ADMIN)',
+        timestamp: new Date().toISOString(),
+        payload: {
+          mapId: testMap.id,
+          chunkIndex: i,
+          totalChunks,
+          chunk,
+        },
+      });
+    }
+
+    expect(receivedMap).not.toBeNull();
+    expect(receivedMap.id).toBe(testMap.id);
+    expect(receivedMap.name).toBe(testMap.name);
+    expect(receivedMap.dataUrl).toBe(largeDummyDataUrl);
+    expect(receivedMap.dataUrl.length).toBe(largeDummyDataUrl.length);
+    expect(receivedSender).toBe('Somsak (ADMIN)');
+
+    unsubscribe();
+  });
+
+  it('responds to REQUEST_SYNC by invoking syncDataProvider', () => {
+    let syncRequested = false;
+    realtimeEngine.setSyncDataProvider(() => {
+      syncRequested = true;
+      return {
+        maps: [],
+        pins: [],
+      };
+    });
+
+    (realtimeEngine as any).handleIncomingMessage({
+      type: 'REQUEST_SYNC',
+      senderId: 'new-client-joining',
+      senderName: 'Guest',
+      timestamp: new Date().toISOString(),
+      payload: {},
+    });
+
+    expect(syncRequested).toBe(true);
+  });
 });
